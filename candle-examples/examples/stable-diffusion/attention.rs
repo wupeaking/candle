@@ -1,7 +1,7 @@
-#![allow(dead_code)]
 //! Attention Based Building Blocks
-use candle::{IndexOp, Result, Tensor, D};
+use candle::{DType, IndexOp, Result, Tensor, D};
 use candle_nn as nn;
+use candle_nn::Module;
 
 #[derive(Debug)]
 struct GeGlu {
@@ -61,6 +61,22 @@ impl FeedForward {
     }
 }
 
+#[cfg(feature = "flash-attn")]
+fn flash_attn(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    softmax_scale: f32,
+    causal: bool,
+) -> Result<Tensor> {
+    candle_flash_attn::flash_attn(q, k, v, softmax_scale, causal)
+}
+
+#[cfg(not(feature = "flash-attn"))]
+fn flash_attn(_: &Tensor, _: &Tensor, _: &Tensor, _: f32, _: bool) -> Result<Tensor> {
+    unimplemented!("compile with '--features flash-attn'")
+}
+
 #[derive(Debug)]
 struct CrossAttention {
     to_q: nn::Linear,
@@ -72,6 +88,7 @@ struct CrossAttention {
     slice_size: Option<usize>,
     span: tracing::Span,
     span_attn: tracing::Span,
+    use_flash_attn: bool,
 }
 
 impl CrossAttention {
@@ -83,6 +100,7 @@ impl CrossAttention {
         heads: usize,
         dim_head: usize,
         slice_size: Option<usize>,
+        use_flash_attn: bool,
     ) -> Result<Self> {
         let inner_dim = dim_head * heads;
         let context_dim = context_dim.unwrap_or(query_dim);
@@ -103,6 +121,7 @@ impl CrossAttention {
             slice_size,
             span,
             span_attn,
+            use_flash_attn,
         })
     }
 
@@ -129,6 +148,10 @@ impl CrossAttention {
     ) -> Result<Tensor> {
         let batch_size_attention = query.dim(0)?;
         let mut hidden_states = Vec::with_capacity(batch_size_attention / slice_size);
+        let in_dtype = query.dtype();
+        let query = query.to_dtype(DType::F32)?;
+        let key = key.to_dtype(DType::F32)?;
+        let value = value.to_dtype(DType::F32)?;
 
         for i in 0..batch_size_attention / slice_size {
             let start_idx = i * slice_size;
@@ -140,14 +163,40 @@ impl CrossAttention {
             let xs = nn::ops::softmax(&xs, D::Minus1)?.matmul(&value.i(start_idx..end_idx)?)?;
             hidden_states.push(xs)
         }
-        let hidden_states = Tensor::stack(&hidden_states, 0)?;
+        let hidden_states = Tensor::stack(&hidden_states, 0)?.to_dtype(in_dtype)?;
         self.reshape_batch_dim_to_heads(&hidden_states)
     }
 
     fn attention(&self, query: &Tensor, key: &Tensor, value: &Tensor) -> Result<Tensor> {
         let _enter = self.span_attn.enter();
-        let xs = query.matmul(&(key.transpose(D::Minus1, D::Minus2)? * self.scale)?)?;
-        let xs = nn::ops::softmax(&xs, D::Minus1)?.matmul(value)?;
+        let xs = if self.use_flash_attn {
+            let init_dtype = query.dtype();
+            let q = query
+                .to_dtype(candle::DType::F16)?
+                .unsqueeze(0)?
+                .transpose(1, 2)?;
+            let k = key
+                .to_dtype(candle::DType::F16)?
+                .unsqueeze(0)?
+                .transpose(1, 2)?;
+            let v = value
+                .to_dtype(candle::DType::F16)?
+                .unsqueeze(0)?
+                .transpose(1, 2)?;
+            flash_attn(&q, &k, &v, self.scale as f32, false)?
+                .transpose(1, 2)?
+                .squeeze(0)?
+                .to_dtype(init_dtype)?
+        } else {
+            let in_dtype = query.dtype();
+            let query = query.to_dtype(DType::F32)?;
+            let key = key.to_dtype(DType::F32)?;
+            let value = value.to_dtype(DType::F32)?;
+            let xs = query.matmul(&(key.t()? * self.scale)?)?;
+            nn::ops::softmax(&xs, D::Minus1)?
+                .matmul(&value)?
+                .to_dtype(in_dtype)?
+        };
         self.reshape_batch_dim_to_heads(&xs)
     }
 
@@ -160,15 +209,17 @@ impl CrossAttention {
         let query = self.reshape_heads_to_batch_dim(&query)?;
         let key = self.reshape_heads_to_batch_dim(&key)?;
         let value = self.reshape_heads_to_batch_dim(&value)?;
-        let xs = match self.slice_size {
-            None => self.attention(&query, &key, &value)?,
-            Some(slice_size) => {
-                if query.dim(0)? / slice_size <= 1 {
-                    self.attention(&query, &key, &value)?
-                } else {
-                    self.sliced_attention(&query, &key, &value, slice_size)?
-                }
+        let dim0 = query.dim(0)?;
+        let slice_size = self.slice_size.and_then(|slice_size| {
+            if dim0 < slice_size {
+                None
+            } else {
+                Some(slice_size)
             }
+        });
+        let xs = match slice_size {
+            None => self.attention(&query, &key, &value)?,
+            Some(slice_size) => self.sliced_attention(&query, &key, &value, slice_size)?,
         };
         self.to_out.forward(&xs)
     }
@@ -194,6 +245,7 @@ impl BasicTransformerBlock {
         d_head: usize,
         context_dim: Option<usize>,
         sliced_attention_size: Option<usize>,
+        use_flash_attn: bool,
     ) -> Result<Self> {
         let attn1 = CrossAttention::new(
             vs.pp("attn1"),
@@ -202,6 +254,7 @@ impl BasicTransformerBlock {
             n_heads,
             d_head,
             sliced_attention_size,
+            use_flash_attn,
         )?;
         let ff = FeedForward::new(vs.pp("ff"), dim, None, 4)?;
         let attn2 = CrossAttention::new(
@@ -211,6 +264,7 @@ impl BasicTransformerBlock {
             n_heads,
             d_head,
             sliced_attention_size,
+            use_flash_attn,
         )?;
         let norm1 = nn::layer_norm(dim, 1e-5, vs.pp("norm1"))?;
         let norm2 = nn::layer_norm(dim, 1e-5, vs.pp("norm2"))?;
@@ -279,6 +333,7 @@ impl SpatialTransformer {
         in_channels: usize,
         n_heads: usize,
         d_head: usize,
+        use_flash_attn: bool,
         config: SpatialTransformerConfig,
     ) -> Result<Self> {
         let inner_dim = n_heads * d_head;
@@ -304,6 +359,7 @@ impl SpatialTransformer {
                 d_head,
                 config.context_dim,
                 config.sliced_attention_size,
+                use_flash_attn,
             )?;
             transformer_blocks.push(tb)
         }
@@ -412,10 +468,15 @@ impl AttentionBlock {
         let num_heads = channels / num_head_channels;
         let group_norm =
             nn::group_norm(config.num_groups, channels, config.eps, vs.pp("group_norm"))?;
-        let query = nn::linear(channels, channels, vs.pp("query"))?;
-        let key = nn::linear(channels, channels, vs.pp("key"))?;
-        let value = nn::linear(channels, channels, vs.pp("value"))?;
-        let proj_attn = nn::linear(channels, channels, vs.pp("proj_attn"))?;
+        let (q_path, k_path, v_path, out_path) = if vs.dtype() == DType::F16 {
+            ("to_q", "to_k", "to_v", "to_out.0")
+        } else {
+            ("query", "key", "value", "proj_attn")
+        };
+        let query = nn::linear(channels, channels, vs.pp(q_path))?;
+        let key = nn::linear(channels, channels, vs.pp(k_path))?;
+        let value = nn::linear(channels, channels, vs.pp(v_path))?;
+        let proj_attn = nn::linear(channels, channels, vs.pp(out_path))?;
         let span = tracing::span!(tracing::Level::TRACE, "attn-block");
         Ok(Self {
             group_norm,
@@ -438,6 +499,7 @@ impl AttentionBlock {
 
     pub fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let _enter = self.span.enter();
+        let in_dtype = xs.dtype();
         let residual = xs;
         let (batch, channel, height, width) = xs.dims4()?;
         let xs = self
@@ -450,9 +512,13 @@ impl AttentionBlock {
         let key_proj = self.key.forward(&xs)?;
         let value_proj = self.value.forward(&xs)?;
 
-        let query_states = self.transpose_for_scores(query_proj)?;
-        let key_states = self.transpose_for_scores(key_proj)?;
-        let value_states = self.transpose_for_scores(value_proj)?;
+        let query_states = self
+            .transpose_for_scores(query_proj)?
+            .to_dtype(DType::F32)?;
+        let key_states = self.transpose_for_scores(key_proj)?.to_dtype(DType::F32)?;
+        let value_states = self
+            .transpose_for_scores(value_proj)?
+            .to_dtype(DType::F32)?;
 
         let scale = f64::powf((self.channels as f64) / (self.num_heads as f64), -0.25);
         let attention_scores =
@@ -461,6 +527,7 @@ impl AttentionBlock {
         let attention_probs = nn::ops::softmax(&attention_scores, D::Minus1)?;
 
         let xs = attention_probs.matmul(&value_states.contiguous()?)?;
+        let xs = xs.to_dtype(in_dtype)?;
         let xs = xs.transpose(1, 2)?.contiguous()?;
         let xs = xs.flatten_from(D::Minus2)?;
         let xs = self

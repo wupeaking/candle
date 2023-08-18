@@ -28,7 +28,7 @@ Check out our [examples](./candle-examples/examples/):
 - [StarCoder](./candle-examples/examples/bigcode/): LLM specialized to code
   generation.
 - [Stable Diffusion](./candle-examples/examples/stable-diffusion/): text to
-  image generative model, only cpu support at the moment and on the slow side.
+  image generative model, yet to be optimized.
 
 Run them using the following commands:
 ```
@@ -37,10 +37,11 @@ cargo run --example llama --release
 cargo run --example falcon --release
 cargo run --example bert --release
 cargo run --example bigcode --release
-cargo run --example stable-diffusion --release --features image -- --prompt "a rusty robot holding a fire torch"
+cargo run --example stable-diffusion --release -- --prompt "a rusty robot holding a fire torch"
 ```
 
-In order to use **CUDA** add `--features cuda` to the example command line.
+In order to use **CUDA** add `--features cuda` to the example command line. If
+you have cuDNN installed, use `--features cudnn` for even more speedups.
 
 There are also some wasm examples for whisper and
 [llama2.c](https://github.com/karpathy/llama2.c). You can either build them with
@@ -70,11 +71,12 @@ And then head over to
     - Optimized CPU backend with optional MKL support for x86 and Accelerate for macs.
     - CUDA backend for efficiently running on GPUs, multiple GPU distribution via NCCL.
     - WASM support, run your models in a browser.
-- Model support out of the box.
+- Included models.
     - LLMs: Llama v1 and v2, Falcon, StarCoder.
-    - Whisper.
+    - Whisper (multi-lingual support).
     - Stable Diffusion.
 - Serverless (on CPU), small and fast deployments.
+- Quantization support using the llama.cpp quantized types.
 
 <!--- ANCHOR_END: features --->
 
@@ -144,20 +146,33 @@ Finally, Rust is cool! A lot of the HF ecosystem already has Rust crates, like [
 #### Missing symbols when compiling with the mkl feature.
 
 If you get some missing symbols when compiling binaries/tests using the mkl
-features, e.g.:
+or accelerate features, e.g. for mkl you get:
 ```
   = note: /usr/bin/ld: (....o): in function `blas::sgemm':
           .../blas-0.22.0/src/lib.rs:1944: undefined reference to `sgemm_' collect2: error: ld returned 1 exit status
 
   = note: some `extern` functions couldn't be found; some native libraries may need to be installed or have their path specified
   = note: use the `-l` flag to specify native libraries to link
-  = note: use the `cargo:rustc-link-lib` directive to specify the native libraries to link with Cargo (see https://doc.rust-lang.org/cargo/reference/build-scripts.html#cargorustc-link-libkindname)
+  = note: use the `cargo:rustc-link-lib` directive to specify the native libraries to link with Cargo
+```
+or for accelerate:
+```
+Undefined symbols for architecture arm64:
+            "_dgemm_", referenced from:
+                candle_core::accelerate::dgemm::h1b71a038552bcabe in libcandle_core...
+            "_sgemm_", referenced from:
+                candle_core::accelerate::sgemm::h2cf21c592cba3c47 in libcandle_core...
+          ld: symbol(s) not found for architecture arm64
 ```
 
 This is likely due to a missing linker flag that was needed to enable the mkl library. You
-can try adding the following at the top of your binary:
-```
+can try adding the following for mkl at the top of your binary:
+```rust
 extern crate intel_mkl_src;
+```
+or for accelerate:
+```rust
+extern crate accelerate_src;
 ```
 
 #### Cannot run llama example : access to source requires login credentials

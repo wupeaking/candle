@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! 2D UNet Denoising Models
 //!
 //! The 2D Unet models take as input a noisy sample and the current diffusion
@@ -6,8 +5,9 @@
 use crate::embeddings::{TimestepEmbedding, Timesteps};
 use crate::unet_2d_blocks::*;
 use crate::utils::{conv2d, Conv2d};
-use candle::{DType, Result, Tensor};
+use candle::{Result, Tensor};
 use candle_nn as nn;
+use candle_nn::Module;
 
 #[derive(Debug, Clone, Copy)]
 pub struct BlockConfig {
@@ -103,6 +103,7 @@ impl UNet2DConditionModel {
         vs: nn::VarBuilder,
         in_channels: usize,
         out_channels: usize,
+        use_flash_attn: bool,
         config: UNet2DConditionModelConfig,
     ) -> Result<Self> {
         let n_blocks = config.blocks.len();
@@ -161,6 +162,7 @@ impl UNet2DConditionModel {
                         in_channels,
                         out_channels,
                         Some(time_embed_dim),
+                        use_flash_attn,
                         config,
                     )?;
                     Ok(UNetDownBlock::CrossAttn(block))
@@ -190,6 +192,7 @@ impl UNet2DConditionModel {
             vs.pp("mid_block"),
             bl_channels,
             Some(time_embed_dim),
+            use_flash_attn,
             mid_cfg,
         )?;
 
@@ -242,6 +245,7 @@ impl UNet2DConditionModel {
                         prev_out_channels,
                         out_channels,
                         Some(time_embed_dim),
+                        use_flash_attn,
                         config,
                     )?;
                     Ok(UNetUpBlock::CrossAttn(block))
@@ -313,7 +317,7 @@ impl UNet2DConditionModel {
             xs.clone()
         };
         // 1. time
-        let emb = (Tensor::ones(bsize, DType::F32, device)? * timestep)?;
+        let emb = (Tensor::ones(bsize, xs.dtype(), device)? * timestep)?;
         let emb = self.time_proj.forward(&emb)?;
         let emb = self.time_embedding.forward(&emb)?;
         // 2. pre-process

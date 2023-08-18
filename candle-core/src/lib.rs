@@ -39,22 +39,24 @@ pub mod backend;
 pub mod backprop;
 mod conv;
 mod convert;
+pub mod cpu;
 pub mod cpu_backend;
-pub mod cpu_kernels;
 #[cfg(feature = "cuda")]
 pub mod cuda_backend;
+#[cfg(feature = "cudnn")]
+pub mod cudnn;
 mod device;
 pub mod display;
 mod dtype;
 mod dummy_cuda_backend;
 pub mod error;
-pub mod ggml;
 mod indexer;
 pub mod layout;
 #[cfg(feature = "mkl")]
 mod mkl;
 pub mod npy;
 mod op;
+pub mod quantized;
 pub mod safetensors;
 pub mod shape;
 mod storage;

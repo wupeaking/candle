@@ -1,4 +1,4 @@
-pub trait VecDot: num_traits::NumAssign + Copy {
+pub trait VecOps: num_traits::NumAssign + Copy {
     /// Dot-product of two vectors.
     ///
     /// # Safety
@@ -28,24 +28,31 @@ pub trait VecDot: num_traits::NumAssign + Copy {
     }
 }
 
-impl VecDot for f32 {
+impl VecOps for f32 {
     #[inline(always)]
     unsafe fn vec_dot(lhs: *const Self, rhs: *const Self, res: *mut Self, len: usize) {
-        ggblas::ggml::vec_dot_f32(lhs, rhs, res, len)
+        super::vec_dot_f32(lhs, rhs, res, len)
     }
 
-    // TODO: enable the following once the updated ggblas is available.
-    // #[inline(always)]
-    // unsafe fn vec_reduce_sum(xs: *const Self, res: *mut Self, len: usize) {
-    //    ggblas::ggml::vec_reduce_sum(xs, res, len)
-    // }
+    #[inline(always)]
+    unsafe fn vec_reduce_sum(xs: *const Self, res: *mut Self, len: usize) {
+        super::vec_sum(xs, res, len)
+    }
 }
 
-impl VecDot for f64 {}
-impl VecDot for half::bf16 {}
-impl VecDot for half::f16 {}
-impl VecDot for u8 {}
-impl VecDot for u32 {}
+impl VecOps for half::f16 {
+    #[inline(always)]
+    unsafe fn vec_dot(lhs: *const Self, rhs: *const Self, res: *mut Self, len: usize) {
+        let mut res_f32 = 0f32;
+        super::vec_dot_f16(lhs, rhs, &mut res_f32, len);
+        *res = half::f16::from_f32(res_f32);
+    }
+}
+
+impl VecOps for f64 {}
+impl VecOps for half::bf16 {}
+impl VecOps for u8 {}
+impl VecOps for u32 {}
 
 #[inline(always)]
 pub fn par_for_each(n_threads: usize, func: impl Fn(usize) + Send + Sync) {

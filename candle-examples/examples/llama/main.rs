@@ -19,62 +19,14 @@ use candle::{DType, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
 use hf_hub::api::sync::Api;
+use std::io::Write;
 
 mod model;
-use model::{Config, Llama};
+use model::{Config, Llama, LlamaConfig};
 
+const EOS_TOKEN: &str = "</s>";
 const MAX_SEQ_LEN: usize = 4096;
-const DEFAULT_PROMPT: &str = r"
-EDWARD:
-I wonder how our princely father 'scaped,
-Or whether he be 'scaped away or no
-From Clifford's and Northumberland's pursuit:
-Had he been ta'en, we should have heard the news;
-Had he been slain, we should have heard the news;
-Or had he 'scaped, methinks we should have heard
-The happy tidings of his good escape.
-How fares my brother? why is he so sad?
-
-RICHARD:
-I cannot joy, until I be resolved
-Where our right valiant father is become.
-I saw him in the battle range about;
-And watch'd him how he singled Clifford forth.
-Methought he bore him in the thickest troop
-As doth a lion in a herd of neat;
-Or as a bear, encompass'd round with dogs,
-Who having pinch'd a few and made them cry,
-The rest stand all aloof, and bark at him.
-So fared our father with his enemies;
-So fled his enemies my warlike father:
-Methinks, 'tis prize enough to be his son.
-See how the morning opes her golden gates,
-And takes her farewell of the glorious sun!
-How well resembles it the prime of youth,
-Trimm'd like a younker prancing to his love!
-
-EDWARD:
-Dazzle mine eyes, or do I see three suns?
-
-RICHARD:
-Three glorious suns, each one a perfect sun;
-Not separated with the racking clouds,
-But sever'd in a pale clear-shining sky.
-See, see! they join, embrace, and seem to kiss,
-As if they vow'd some league inviolable:
-Now are they but one lamp, one light, one sun.
-In this the heaven figures some event.
-
-EDWARD:
-'Tis wondrous strange, the like yet never heard of.
-I think it cites us, brother, to the field,
-That we, the sons of brave Plantagenet,
-Each one already blazing by our meeds,
-Should notwithstanding join our lights together
-And over-shine the earth as this the world.
-Whate'er it bodes, henceforward will I bear
-Upon my target three fair-shining suns.
-";
+const DEFAULT_PROMPT: &str = "My favorite theorem is ";
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -123,6 +75,11 @@ struct Args {
 
     #[arg(long)]
     use_flash_attn: bool,
+
+    /// The folder name that contains safetensor weights and json files
+    /// (same structure as huggingface online)
+    #[arg(long)]
+    local_weights: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -132,7 +89,6 @@ fn main() -> Result<()> {
 
     let args = Args::parse();
     let _guard = if args.tracing {
-        println!("tracing...");
         let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
         tracing_subscriber::registry().with(chrome_layer).init();
         Some(guard)
@@ -141,18 +97,18 @@ fn main() -> Result<()> {
     };
 
     let device = candle_examples::device(args.cpu)?;
-    let config = if args.v1 {
-        Config::config_7b_v1(args.use_flash_attn)
-    } else {
-        Config::config_7b_v2(args.use_flash_attn)
-    };
     let dtype = if args.use_f32 { DType::F32 } else { DType::F16 };
-    let cache = model::Cache::new(!args.no_kv_cache, dtype, &config, &device)?;
-    let (llama, tokenizer_filename) = match args.npy {
+    let (llama, tokenizer_filename, cache) = match args.npy {
         Some(filename) => {
+            let config = if args.v1 {
+                Config::config_7b_v1(args.use_flash_attn)
+            } else {
+                Config::config_7b_v2(args.use_flash_attn)
+            };
+            let cache = model::Cache::new(!args.no_kv_cache, dtype, &config, &device)?;
             let vb = VarBuilder::from_npz(filename, dtype, &device)?;
             let tokenizer = std::path::PathBuf::from("llama-tokenizer.json");
-            (Llama::load(vb, &cache, &config)?, tokenizer)
+            (Llama::load(vb, &cache, &config)?, tokenizer, cache)
         }
         None => {
             let api = Api::new()?;
@@ -165,14 +121,33 @@ fn main() -> Result<()> {
             });
             println!("loading the model weights from {model_id}");
             let api = api.model(model_id);
-            let tokenizer_filename = api.get("tokenizer.json")?;
+
+            let tokenizer_filename = match &args.local_weights {
+                Some(path) => (path.to_owned() + "tokenizer.json").into(),
+                _ => api.get("tokenizer.json")?,
+            };
+
+            let config_filename = match &args.local_weights {
+                Some(path) => (path.to_owned() + "config.json").into(),
+                _ => api.get("config.json")?,
+            };
+            let config: LlamaConfig = serde_json::from_slice(&std::fs::read(config_filename)?)?;
+            let config = config.into_config(args.use_flash_attn);
+
             let mut filenames = vec![];
             for rfilename in [
                 "model-00001-of-00002.safetensors",
                 "model-00002-of-00002.safetensors",
             ] {
-                let filename = api.get(rfilename)?;
-                filenames.push(filename);
+                match &args.local_weights {
+                    Some(path) => {
+                        filenames.push((path.to_owned() + rfilename).into());
+                    }
+                    _ => {
+                        let filename = api.get(rfilename)?;
+                        filenames.push(filename);
+                    }
+                };
             }
 
             println!("building the model");
@@ -184,12 +159,14 @@ fn main() -> Result<()> {
                 .iter()
                 .map(|h| Ok(h.deserialize()?))
                 .collect::<Result<Vec<_>>>()?;
+            let cache = model::Cache::new(!args.no_kv_cache, dtype, &config, &device)?;
 
             let vb = VarBuilder::from_safetensors(tensors, dtype, &device);
-            (Llama::load(vb, &cache, &config)?, tokenizer_filename)
+            (Llama::load(vb, &cache, &config)?, tokenizer_filename, cache)
         }
     };
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
+    let eos_token_id = tokenizer.token_to_id(EOS_TOKEN);
     let prompt = args.prompt.as_ref().map_or(DEFAULT_PROMPT, |p| p.as_str());
     let mut tokens = tokenizer
         .encode(prompt, true)
@@ -198,12 +175,12 @@ fn main() -> Result<()> {
         .to_vec();
 
     println!("starting the inference loop");
+    print!("{prompt}");
     let mut logits_processor = LogitsProcessor::new(args.seed, args.temperature);
-    let mut new_tokens = vec![];
     let start_gen = std::time::Instant::now();
     let mut index_pos = 0;
+    let mut token_generated = 0;
     for index in 0..args.sample_len {
-        let start_gen = std::time::Instant::now();
         let context_size = if cache.use_kv_cache && index > 0 {
             1
         } else {
@@ -216,22 +193,27 @@ fn main() -> Result<()> {
         index_pos += ctxt.len();
 
         let next_token = logits_processor.sample(&logits)?;
+        token_generated += 1;
         tokens.push(next_token);
-        new_tokens.push(next_token);
-        println!("> {:?}", start_gen.elapsed());
-        println!(
-            "{} token: {} '{}'",
-            index + 1,
-            next_token,
-            tokenizer.decode(vec![next_token], true).map_err(E::msg)?
-        );
+
+        // Extracting the last token as a string is complicated, here we just apply some simple
+        // heuristics as it seems to work well enough for this example. See the following for more
+        // details:
+        // https://github.com/huggingface/tokenizers/issues/1141#issuecomment-1562644141
+        if let Some(text) = tokenizer.id_to_token(next_token) {
+            let text = text.replace('▁', " ").replace("<0x0A>", "\n");
+            print!("{text}");
+            std::io::stdout().flush()?;
+        }
+        if Some(next_token) == eos_token_id {
+            break;
+        }
     }
     let dt = start_gen.elapsed();
     println!(
-        "{} tokens generated ({} token/s)\n----\n{}\n----",
-        args.sample_len,
-        args.sample_len as f64 / dt.as_secs_f64(),
-        tokenizer.decode(new_tokens, true).map_err(E::msg)?
+        "\n\n{} tokens generated ({} token/s)\n",
+        token_generated,
+        token_generated as f64 / dt.as_secs_f64(),
     );
     Ok(())
 }
