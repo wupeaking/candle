@@ -118,6 +118,7 @@ fn main() -> Result<()> {
             .get_ids()
             .to_vec();
         let token_ids = Tensor::new(&tokens[..], device)?.unsqueeze(0)?;
+        println!("shape: {:?}", token_ids.shape());
         let token_type_ids = token_ids.zeros_like()?;
         println!("Loaded and encoded {:?}", start.elapsed());
         for idx in 0..args.n {
