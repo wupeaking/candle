@@ -36,10 +36,10 @@ fn tensor_2d(device: &Device) -> Result<()> {
 
 fn binary_op(device: &Device) -> Result<()> {
     let data = &[[3f32, 1., 4., 1., 5.], [2., 1., 7., 8., 2.]];
-    let tensor = Tensor::new(data, device)?;
+    let tensor1 = Tensor::new(data, device)?;
     let data2 = &[[5f32, 5., 5., 5., 5.], [2., 1., 7., 8., 2.]];
     let tensor2 = Tensor::new(data2, device)?;
-    let tensor = (&tensor + (&tensor * &tensor)? / (&tensor + &tensor2))?;
+    let tensor = (&tensor1 + (&tensor1 * &tensor1)? / (&tensor1 + &tensor2))?;
     let dims = tensor.dims2()?;
     assert_eq!(dims, (2, 5));
     let content: Vec<Vec<f32>> = tensor.to_vec2()?;
@@ -49,6 +49,17 @@ fn binary_op(device: &Device) -> Result<()> {
     let tensor = (&tensor - &tensor)?;
     let content: Vec<Vec<f32>> = tensor.to_vec2()?;
     assert_eq!(content[0], [0., 0., 0., 0., 0.]);
+
+    let min = tensor1.minimum(&(&tensor2 * 0.5)?)?;
+    let max = tensor1.maximum(&(&tensor2 * 0.5)?)?;
+    assert_eq!(
+        min.to_vec2::<f32>()?,
+        [[2.5, 1.0, 2.5, 1.0, 2.5], [1.0, 0.5, 3.5, 4.0, 1.0]],
+    );
+    assert_eq!(
+        max.to_vec2::<f32>()?,
+        [[3.0, 2.5, 4.0, 2.5, 5.0], [2.0, 1.0, 7.0, 8.0, 2.0]]
+    );
     Ok(())
 }
 
@@ -747,6 +758,25 @@ fn matmul(device: &Device) -> Result<()> {
     Ok(())
 }
 
+fn broadcast_matmul(device: &Device) -> Result<()> {
+    let lhs = Tensor::randn(0f32, 1f32, (3, 1, 4, 5), device)?;
+    let rhs = Tensor::randn(0f32, 1f32, (6, 5, 2), device)?;
+    let out = lhs.broadcast_matmul(&rhs)?;
+    assert_eq!(out.dims(), &[3, 6, 4, 2]);
+    for idx1 in 0..3 {
+        for idx2 in 0..6 {
+            let out = out.i((idx1, idx2))?;
+            let lhs = lhs.i((idx1, 0))?;
+            let rhs = rhs.i(idx2)?;
+            let out2 = lhs.matmul(&rhs);
+            let sum_diff2 = (out - out2)?.sqr()?.sum_all()?;
+            // With cuda, we see errors of up to ~1e-12.
+            assert!(sum_diff2.to_vec0::<f32>()? < 1e-6)
+        }
+    }
+    Ok(())
+}
+
 fn broadcasting(device: &Device) -> Result<()> {
     let t1 = Tensor::arange(0f32, 24f32, device)?.reshape((4, 2, 3))?;
     let t2 = Tensor::new(&[100f32, 200f32], device)?;
@@ -864,6 +894,7 @@ test_device!(binary_op, binary_op_cpu, binary_op_gpu);
 test_device!(embeddings, embeddings_cpu, embeddings_gpu);
 test_device!(cmp, cmp_cpu, cmp_gpu);
 test_device!(matmul, matmul_cpu, matmul_gpu);
+test_device!(broadcast_matmul, broadcast_matmul_cpu, broadcast_matmul_gpu);
 test_device!(broadcasting, broadcasting_cpu, broadcasting_gpu);
 test_device!(index_select, index_select_cpu, index_select_gpu);
 test_device!(index_add, index_add_cpu, index_add_gpu);

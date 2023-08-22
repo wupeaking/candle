@@ -40,6 +40,8 @@ pub enum BinaryOp {
     Mul,
     Sub,
     Div,
+    Maximum,
+    Minimum,
 }
 
 // Unary ops with no argument
@@ -117,6 +119,7 @@ pub enum Op {
     Reshape(Tensor),
     ToDevice(Tensor),
     Transpose(Tensor, usize, usize),
+    Permute(Tensor, Vec<usize>),
     Elu(Tensor, f64),
     CustomOp1(Tensor, std::sync::Arc<Box<dyn CustomOp1 + Send + Sync>>),
     CustomOp2(
@@ -290,6 +293,8 @@ pub(crate) struct Add;
 pub(crate) struct Div;
 pub(crate) struct Mul;
 pub(crate) struct Sub;
+pub(crate) struct Maximum;
+pub(crate) struct Minimum;
 pub(crate) struct Exp;
 pub(crate) struct Log;
 pub(crate) struct Sin;
@@ -370,6 +375,20 @@ bin_op!(Add, "add", |v1, v2| v1 + v2, vs_add, vd_add);
 bin_op!(Sub, "sub", |v1, v2| v1 - v2, vs_sub, vd_sub);
 bin_op!(Mul, "mul", |v1, v2| v1 * v2, vs_mul, vd_mul);
 bin_op!(Div, "div", |v1, v2| v1 / v2, vs_div, vd_div);
+bin_op!(
+    Minimum,
+    "minimum",
+    |v1, v2| if v1 > v2 { v2 } else { v1 },
+    vs_min,
+    vd_min
+);
+bin_op!(
+    Maximum,
+    "maximum",
+    |v1, v2| if v1 < v2 { v2 } else { v1 },
+    vs_max,
+    vd_max
+);
 
 macro_rules! unary_op {
     ($op: ident, $name: literal, $a: ident, $e: expr) => {

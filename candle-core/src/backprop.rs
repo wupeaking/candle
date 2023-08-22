@@ -96,6 +96,7 @@ impl Tensor {
                     | Op::ToDType(node)
                     | Op::ToDevice(node)
                     | Op::Transpose(node, _, _)
+                    | Op::Permute(node, _)
                     | Op::Narrow(node, _, _, _)
                     | Op::Unary(node, _)
                     | Op::Elu(node, _)
@@ -160,6 +161,21 @@ impl Tensor {
                         let rhs_grad = grad.mul(lhs)?.div(&rhs.sqr()?)?;
                         let rhs_sum_grad = grads.or_insert(rhs)?;
                         *rhs_sum_grad = rhs_sum_grad.sub(&rhs_grad)?;
+                    }
+                    Op::Binary(lhs, rhs, BinaryOp::Minimum)
+                    | Op::Binary(lhs, rhs, BinaryOp::Maximum) => {
+                        let mask_lhs = node.eq(lhs)?.to_dtype(grad.dtype())?;
+                        let mask_rhs = node.eq(rhs)?.to_dtype(grad.dtype())?;
+
+                        // If both masks are 1 one the same point, we want to scale the
+                        // gradient by 0.5 rather than 1.
+                        let lhs_grad = mask_lhs.mul(&grad)?.div(&(&mask_rhs + 1.)?)?;
+                        let lhs_sum_grad = grads.or_insert(lhs)?;
+                        *lhs_sum_grad = lhs_sum_grad.add(&lhs_grad)?;
+
+                        let rhs_grad = mask_rhs.mul(&grad)?.div(&(&mask_lhs + 1.)?)?;
+                        let rhs_sum_grad = grads.or_insert(rhs)?;
+                        *rhs_sum_grad = rhs_sum_grad.add(&rhs_grad)?;
                     }
                     Op::WhereCond(pred, t, f) => {
                         let zeros = grad.zeros_like()?;
@@ -400,6 +416,15 @@ impl Tensor {
                     }
                     Op::Transpose(arg, dim1, dim2) => {
                         let arg_grad = grad.transpose(*dim1, *dim2)?;
+                        let sum_grad = grads.or_insert(arg)?;
+                        *sum_grad = sum_grad.add(&arg_grad)?
+                    }
+                    Op::Permute(arg, dims) => {
+                        let mut inv_dims = vec![0; dims.len()];
+                        for (i, &dim_idx) in dims.iter().enumerate() {
+                            inv_dims[dim_idx] = i
+                        }
+                        let arg_grad = grad.permute(inv_dims)?;
                         let sum_grad = grads.or_insert(arg)?;
                         *sum_grad = sum_grad.add(&arg_grad)?
                     }
