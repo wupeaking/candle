@@ -1,7 +1,7 @@
 mod model;
 use anyhow::Result;
 use candle::{DType, Tensor, D};
-use candle_nn::VarBuilder;
+use candle_nn::{ops::softmax, VarBuilder};
 use clap::Parser;
 use image::{self, EncodableLayout};
 use model::Restnet;
@@ -37,7 +37,6 @@ impl Args {
 }
 
 fn main() -> Result<()> {
-    let start = std::time::Instant::now();
     let args = Args::parse();
     let model = args.build_model()?;
     let device = candle_examples::device(args.cpu)?;
@@ -45,19 +44,27 @@ fn main() -> Result<()> {
     // 读取图片 转为Tensor
     let img = match args.img {
         Some(img_path) => {
+            println!("img_path: {:?}", img_path);
             let img =
                 image::open(img_path)?.resize(224, 224, image::imageops::FilterType::Triangle);
             let new_image = img.to_rgb8();
-            Tensor::new(new_image.as_bytes(), &device)?
+            let img_t = Tensor::new(new_image.as_bytes(), &device)?
                 .reshape((
-                    3_usize,
                     new_image.height() as usize,
                     new_image.width() as usize,
+                    3_usize,
                 ))?
-                .to_dtype(DType::F32)?
+                .permute((2, 0, 1))?; // to [c, h, w]
+            (img_t.unsqueeze(0)?.to_dtype(DType::F32)? * (1. / 255.))? // to [b, c, h, w] /255
         }
         None => Tensor::ones((1, 3, 224, 224), DType::F32, &device)?,
     };
+    let ret = model.forward(&img)?;
+    let pret = softmax(&ret, D::Minus1)?;
+    println!("result: {:?}", pret.argmax(D::Minus1)?.to_vec1::<u32>()?);
+
+    // 测试一下性能
+    let start = std::time::Instant::now();
     for _ in 0..10000 {
         let img = Tensor::randn(0.0f32, 1.0f32, (1, 3, 224, 224), &device)?;
         let ret = model.forward(&img)?;
