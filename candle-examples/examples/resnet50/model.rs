@@ -72,6 +72,7 @@ impl Block {
                         Conv2dConfig {
                             padding: 0,
                             stride: 2,
+                            ..Default::default()
                         },
                         128,
                         vb.get(128, "0.downsample.1.running_mean")?,
@@ -98,6 +99,7 @@ impl Block {
                         Conv2dConfig {
                             padding: 0,
                             stride: 2,
+                            ..Default::default()
                         },
                         256,
                         vb.get(256, "0.downsample.1.running_mean")?,
@@ -124,6 +126,7 @@ impl Block {
                         Conv2dConfig {
                             padding: 0,
                             stride: 2,
+                            ..Default::default()
                         },
                         512,
                         vb.get(512, "0.downsample.1.running_mean")?,
@@ -160,6 +163,7 @@ impl Block {
             Conv2dConfig {
                 padding: conv_padding,
                 stride: conv_stride,
+                ..Default::default()
             },
             num_features,
             vb.get(
@@ -255,6 +259,7 @@ impl Restnet {
             candle_nn::Conv2dConfig {
                 padding: 3,
                 stride: 2,
+                ..Default::default()
             },
         );
 

@@ -3,9 +3,11 @@ use crate::{Device, Result, Shape, Tensor};
 #[cfg(target_feature = "avx")]
 pub mod avx;
 pub mod ggml_file;
+pub mod gguf_file;
 pub mod k_quants;
 #[cfg(target_feature = "neon")]
 pub mod neon;
+pub mod utils;
 
 pub use k_quants::GgmlType;
 

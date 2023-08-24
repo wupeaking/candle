@@ -7,7 +7,8 @@
 Candle is a minimalist ML framework for Rust with a focus on performance (including GPU support) 
 and ease of use. Try our online demos: 
 [whisper](https://huggingface.co/spaces/lmz/candle-whisper),
-[LLaMA2](https://huggingface.co/spaces/lmz/candle-llama2).
+[LLaMA2](https://huggingface.co/spaces/lmz/candle-llama2),
+[yolo](https://huggingface.co/spaces/lmz/candle-yolo).
 
 ```rust
 let a = Tensor::randn(0f32, 1., (2, 3), &Device::Cpu)?;
@@ -86,7 +87,7 @@ And then head over to
     - LLMs: LLaMA v1 and v2, Falcon, StarCoder.
     - Whisper (multi-lingual support).
     - Stable Diffusion.
-    - Computer Vision: DINOv2.
+    - Computer Vision: DINOv2, EfficientNet, yolo-v3, yolo-v8.
 - File formats: load models from safetensors, npz, ggml, or PyTorch files.
 - Serverless (on CPU), small and fast deployments.
 - Quantization support using the llama.cpp quantized types.
@@ -106,7 +107,7 @@ Cheatsheet:
 | Operations | `tensor.view((2, 2))`                    | `tensor.reshape((2, 2))?`                                        |
 | Operations | `a.matmul(b)`                            | `a.matmul(&b)?`                                                  |
 | Arithmetic | `a + b`                                  | `&a + &b`                                                        |
-| Device     | `tensor.to(device="cuda")`               | `tensor.to_device(&Device::Cuda(0))?`                            |
+| Device     | `tensor.to(device="cuda")`               | `tensor.to_device(&Device::new_cuda(0)?)?`                            |
 | Dtype      | `tensor.to(dtype=torch.float16)`         | `tensor.to_dtype(&DType::F16)?`                                  |
 | Saving     | `torch.save({"A": A}, "model.bin")`      | `candle::safetensors::save(&HashMap::from([("A", A)]), "model.safetensors")?` |
 | Loading    | `weights = torch.load("model.bin")`      | `candle::safetensors::load("model.safetensors", &device)`        |
