@@ -275,7 +275,7 @@ impl Restnet {
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        println!("x: {:?}", x);
+        // println!("x: {:?}", x);
         // let padiing_x = x
         //     .pad_with_zeros(D::Minus1, 3, 3)?
         //     .pad_with_zeros(D::Minus2, 3, 3)?;
