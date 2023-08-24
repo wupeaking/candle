@@ -1,6 +1,6 @@
 mod model;
-use anyhow::{anyhow, Error as E, Result};
-use candle::{DType, Tensor};
+use anyhow::Result;
+use candle::{DType, Tensor, D};
 use candle_nn::VarBuilder;
 use clap::Parser;
 use image::{self, EncodableLayout};
@@ -58,8 +58,18 @@ fn main() -> Result<()> {
         }
         None => Tensor::ones((1, 3, 224, 224), DType::F32, &device)?,
     };
+    for _ in 0..10000 {
+        let img = Tensor::randn(0.0f32, 1.0f32, (1, 3, 224, 224), &device)?;
+        let ret = model.forward(&img)?;
+        println!("{:?}", ret);
+    }
+    let end = start.elapsed().as_millis();
 
-    let ret = model.forward(img)?;
-    println!("{:?}", ret);
+    println!("累计耗时: {:?}ms 平均耗时: {:?}", end, end / 10000);
+
+    let t = Tensor::ones((1, 3, 2, 2), DType::U8, &candle::Device::Cpu)?;
+    let t = t.pad_with_zeros(D::Minus1, 1, 1)?;
+    // .pad_with_zeros(D::Minus2, 1, 1)?;
+    println!("{:?}", t.get(0)?.get(0)?.to_vec2::<u8>()?);
     Ok(())
 }
