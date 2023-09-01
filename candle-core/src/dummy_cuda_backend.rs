@@ -37,6 +37,10 @@ impl crate::backend::BackendStorage for CudaStorage {
         Err(Error::NotCompiledWithCudaSupport)
     }
 
+    fn powf(&self, _: &Layout, _: f64) -> Result<Self> {
+        Err(Error::NotCompiledWithCudaSupport)
+    }
+
     fn elu(&self, _: &Layout, _: f64) -> Result<Self> {
         Err(Error::NotCompiledWithCudaSupport)
     }
@@ -81,6 +85,16 @@ impl crate::backend::BackendStorage for CudaStorage {
         _: &Self,
         _: &Layout,
         _: &crate::conv::ParamsConv2D,
+    ) -> Result<Self> {
+        Err(Error::NotCompiledWithCudaSupport)
+    }
+
+    fn conv_transpose2d(
+        &self,
+        _l: &Layout,
+        _kernel: &Self,
+        _kernel_l: &Layout,
+        _params: &crate::conv::ParamsConvTranspose2D,
     ) -> Result<Self> {
         Err(Error::NotCompiledWithCudaSupport)
     }

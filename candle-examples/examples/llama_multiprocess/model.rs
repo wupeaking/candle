@@ -1,12 +1,15 @@
 use candle::backend::BackendStorage;
 use candle::{CpuStorage, CustomOp1, DType, Device, IndexOp, Layout, Result, Shape, Tensor, D};
-use candle_nn::{rms_norm, Embedding, Linear, Module, RmsNorm, VarBuilder};
+use candle_nn::{Embedding, Linear, Module, RmsNorm};
 use cudarc::nccl::safe::{Comm, ReduceOp};
 use half::f16;
+use serde::Deserialize;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use super::MAX_SEQ_LEN;
+
+use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
 
 struct TensorParallelColumnLinear {
     linear: Linear,
@@ -81,11 +84,19 @@ impl TensorParallelRowLinear {
     }
 }
 
+fn shard(dim: usize, rank: usize, world_size: usize) -> candle_nn::var_builder::Shard {
+    candle_nn::var_builder::Shard {
+        dim,
+        rank,
+        world_size,
+    }
+}
+
 impl TensorParallelColumnLinear {
     fn load(vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
         let rank = comm.rank();
         let size = comm.world_size();
-        let weight = vb.get_sharded("weight", 0, rank, size)?;
+        let weight = vb.get_with_hints((), "weight", shard(0, rank, size))?;
         Ok(Self::new(Linear::new(weight, None)))
     }
 
@@ -94,8 +105,8 @@ impl TensorParallelColumnLinear {
         let size = comm.world_size();
         let weights: Vec<_> = prefixes
             .iter()
-            .map(|p| vb.pp(p).get_sharded("weight", 0, rank, size).unwrap())
-            .collect();
+            .map(|p| vb.pp(p).get_with_hints((), "weight", shard(0, rank, size)))
+            .collect::<Result<Vec<_>>>()?;
         let weight = Tensor::cat(&weights, 0)?;
         Ok(Self::new(Linear::new(weight, None)))
     }
@@ -105,33 +116,26 @@ impl TensorParallelRowLinear {
     fn load(vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
         let rank = comm.rank();
         let size = comm.world_size();
-        let weight = vb.get_sharded("weight", 1, rank, size)?;
+        let weight = vb.get_with_hints((), "weight", shard(1, rank, size))?;
         Ok(Self::new(Linear::new(weight, None), comm))
     }
 }
 
+#[derive(Deserialize)]
 pub struct Config {
     pub hidden_size: usize,
     pub intermediate_size: usize,
     pub vocab_size: usize,
-    pub n_layer: usize,
-    pub n_head: usize,
-    pub n_embd: usize,
-    pub n_key_value_head: usize,
+    pub num_hidden_layers: usize,
+    pub num_attention_heads: usize,
+    pub num_key_value_heads: usize,
+    pub rms_norm_eps: f64,
+    #[serde(default = "default_rope")]
+    pub rope_theta: f32,
 }
 
-impl Config {
-    pub fn config_7b() -> Self {
-        Self {
-            hidden_size: 4096,
-            intermediate_size: 11008,
-            vocab_size: 32000,
-            n_layer: 32,
-            n_head: 32,
-            n_embd: 4096,
-            n_key_value_head: 32,
-        }
-    }
+fn default_rope() -> f32 {
+    10_000.0
 }
 
 #[derive(Clone)]
@@ -143,12 +147,12 @@ pub struct Cache {
 }
 
 impl Cache {
-    pub fn new(config: &Config, device: &Device) -> Result<Self> {
+    pub fn new(dtype: DType, config: &Config, device: &Device) -> Result<Self> {
         // precompute freqs_cis
-        let n_elem = config.n_embd / config.n_head;
+        let n_elem = config.hidden_size / config.num_attention_heads;
         let theta: Vec<_> = (0..n_elem)
             .step_by(2)
-            .map(|i| 1f32 / 10000f32.powf(i as f32 / n_elem as f32))
+            .map(|i| 1f32 / config.rope_theta.powf(i as f32 / n_elem as f32))
             .collect();
         let theta = Tensor::new(theta.as_slice(), device)?;
         let idx_theta = Tensor::arange(0, MAX_SEQ_LEN as u32, device)?
@@ -158,10 +162,10 @@ impl Cache {
         // This is different from the paper, see:
         // https://github.com/huggingface/transformers/blob/6112b1c6442aaf7affd2b0676a1cd4eee30c45cf/src/transformers/models/llama/modeling_llama.py#L112
         let idx_theta = Tensor::cat(&[&idx_theta, &idx_theta], D::Minus1)?;
-        let cos = idx_theta.cos()?.to_dtype(DType::F16)?;
-        let sin = idx_theta.sin()?.to_dtype(DType::F16)?;
+        let cos = idx_theta.cos()?.to_dtype(dtype)?;
+        let sin = idx_theta.sin()?.to_dtype(dtype)?;
         Ok(Self {
-            kvs: Arc::new(Mutex::new(vec![None; config.n_layer])),
+            kvs: Arc::new(Mutex::new(vec![None; config.num_hidden_layers])),
             cos,
             sin,
         })
@@ -185,21 +189,21 @@ fn embedding(cfg: &Config, vb: VarBuilder) -> Result<Embedding> {
 struct CausalSelfAttention {
     qkv_proj: TensorParallelColumnLinear,
     o_proj: TensorParallelRowLinear,
-    n_head: usize,
-    n_key_value_head: usize,
+    num_attention_heads: usize,
+    num_key_value_heads: usize,
     head_dim: usize,
     cache: Cache,
 }
 
 impl CausalSelfAttention {
     fn apply_rotary_emb(&self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
-        let (b_sz, _, seq_len, n_embd) = x.shape().dims4()?;
+        let (b_sz, _, seq_len, hidden_size) = x.shape().dims4()?;
         let cos = self.cache.cos.narrow(0, index_pos, seq_len)?;
         let sin = self.cache.sin.narrow(0, index_pos, seq_len)?;
-        let cos = cos.broadcast_as((b_sz, 1, seq_len, n_embd))?;
-        let sin = sin.broadcast_as((b_sz, 1, seq_len, n_embd))?;
-        let x1 = x.narrow(D::Minus1, 0, n_embd / 2)?;
-        let x2 = x.narrow(D::Minus1, n_embd / 2, n_embd / 2)?;
+        let cos = cos.broadcast_as((b_sz, 1, seq_len, hidden_size))?;
+        let sin = sin.broadcast_as((b_sz, 1, seq_len, hidden_size))?;
+        let x1 = x.narrow(D::Minus1, 0, hidden_size / 2)?;
+        let x2 = x.narrow(D::Minus1, hidden_size / 2, hidden_size / 2)?;
         let rotate_x = Tensor::cat(&[&x2.neg()?, &x1], D::Minus1)?;
         let rope = (x.broadcast_mul(&cos)? + rotate_x.broadcast_mul(&sin)?)?;
         Ok(rope)
@@ -209,30 +213,31 @@ impl CausalSelfAttention {
         let (b_sz, seq_len, _) = x.shape().dims3()?;
 
         let qkv = self.qkv_proj.forward(x)?;
-        let n_embd = self.n_head * self.head_dim;
+        let hidden_size = self.num_attention_heads * self.head_dim;
 
-        let q = qkv.i((.., .., ..self.n_head * self.head_dim))?;
+        let q = qkv.i((.., .., ..self.num_attention_heads * self.head_dim))?;
         let k = qkv.i((
             ..,
             ..,
-            self.n_head * self.head_dim
-                ..self.n_head * self.head_dim + self.n_key_value_head * self.head_dim,
+            self.num_attention_heads * self.head_dim
+                ..self.num_attention_heads * self.head_dim
+                    + self.num_key_value_heads * self.head_dim,
         ))?;
         let v = qkv.i((
             ..,
             ..,
-            self.n_head * self.head_dim + self.n_key_value_head * self.head_dim..,
+            self.num_attention_heads * self.head_dim + self.num_key_value_heads * self.head_dim..,
         ))?;
         // todo!("Q {:?} K {:?} V {:?} - x {:?}", q.shape(), k.shape(), v.shape(), x.shape());
 
         let q = q
-            .reshape((b_sz, seq_len, self.n_head, self.head_dim))?
+            .reshape((b_sz, seq_len, self.num_attention_heads, self.head_dim))?
             .transpose(1, 2)?;
         let k = k
-            .reshape((b_sz, seq_len, self.n_key_value_head, self.head_dim))?
+            .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))?
             .transpose(1, 2)?;
         let mut v = v
-            .reshape((b_sz, seq_len, self.n_key_value_head, self.head_dim))?
+            .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))?
             .transpose(1, 2)?;
 
         let q = self.apply_rotary_emb(&q, index_pos)?;
@@ -266,13 +271,13 @@ impl CausalSelfAttention {
         let y = candle_flash_attn::flash_attn(&q, &k, &v, softmax_scale, seq_len > 1)?
             .transpose(1, 2)?;
         // Convert to contiguous as matmul doesn't support strided vs for now.
-        let y = y.transpose(1, 2)?.reshape(&[b_sz, seq_len, n_embd])?;
+        let y = y.transpose(1, 2)?.reshape(&[b_sz, seq_len, hidden_size])?;
         let y = self.o_proj.forward(&y)?;
         Ok(y)
     }
 
     fn repeat_kv(&self, x: Tensor) -> Result<Tensor> {
-        let n_rep = self.n_head / self.n_key_value_head;
+        let n_rep = self.num_attention_heads / self.num_key_value_heads;
         if n_rep == 1 {
             Ok(x)
         } else {
@@ -295,9 +300,9 @@ impl CausalSelfAttention {
         Ok(Self {
             qkv_proj,
             o_proj,
-            n_head: cfg.n_head / comm.world_size(),
-            n_key_value_head: cfg.n_key_value_head / comm.world_size(),
-            head_dim: cfg.hidden_size / cfg.n_head,
+            num_attention_heads: cfg.num_attention_heads / comm.world_size(),
+            num_key_value_heads: cfg.num_key_value_heads / comm.world_size(),
+            head_dim: cfg.hidden_size / cfg.num_attention_heads,
             cache: cache.clone(),
         })
     }
@@ -340,6 +345,11 @@ struct Block {
     attn: CausalSelfAttention,
     rms_2: RmsNorm,
     mlp: Mlp,
+}
+
+fn rms_norm(size: usize, eps: f64, vb: VarBuilder) -> Result<RmsNorm> {
+    let weight = vb.get_with_hints(size, "weight", shard(0, 0, 1))?;
+    Ok(RmsNorm::new(weight, eps))
 }
 
 impl Block {
@@ -409,7 +419,7 @@ impl Llama {
         let wte = embedding(cfg, vb.pp("model.embed_tokens"))?;
         let lm_head = linear(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
         let norm = rms_norm(cfg.hidden_size, 1e-5, vb.pp("model.norm"))?;
-        let blocks: Vec<_> = (0..cfg.n_layer)
+        let blocks: Vec<_> = (0..cfg.num_hidden_layers)
             .map(|i| {
                 Block::load(
                     vb.pp(&format!("model.layers.{i}")),

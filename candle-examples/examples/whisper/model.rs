@@ -1,4 +1,4 @@
-use candle::{Device, IndexOp, Result, Tensor};
+use candle::{Device, IndexOp, Result, Tensor, D};
 use candle_nn::{ops::softmax, Conv1d, Conv1dConfig, Embedding, LayerNorm, Module, VarBuilder};
 use serde::Deserialize;
 
@@ -17,34 +17,6 @@ pub struct Config {
     pub decoder_attention_heads: usize, // n_text_head
     pub decoder_layers: usize,          // n_text_layer
     pub suppress_tokens: Vec<u32>,
-}
-
-impl Config {
-    #[allow(dead_code)]
-    pub fn tiny_en() -> Self {
-        let suppress_tokens = vec![
-            1, 2, 7, 8, 9, 10, 14, 25, 26, 27, 28, 29, 31, 58, 59, 60, 61, 62, 63, 90, 91, 92, 93,
-            357, 366, 438, 532, 685, 705, 796, 930, 1058, 1220, 1267, 1279, 1303, 1343, 1377, 1391,
-            1635, 1782, 1875, 2162, 2361, 2488, 3467, 4008, 4211, 4600, 4808, 5299, 5855, 6329,
-            7203, 9609, 9959, 10563, 10786, 11420, 11709, 11907, 13163, 13697, 13700, 14808, 15306,
-            16410, 16791, 17992, 19203, 19510, 20724, 22305, 22935, 27007, 30109, 30420, 33409,
-            34949, 40283, 40493, 40549, 47282, 49146, 50257, 50357, 50358, 50359, 50360, 50361,
-            50362,
-        ];
-        Self {
-            num_mel_bins: 80,
-            vocab_size: 51864,
-            max_source_positions: 1500,
-            d_model: 384,
-            encoder_attention_heads: 6,
-            encoder_layers: 4,
-            max_target_positions: 448,
-            // n_text_state: 384,
-            decoder_attention_heads: 6,
-            decoder_layers: 4,
-            suppress_tokens,
-        }
-    }
 }
 
 fn embedding(vocab_size: usize, hidden_size: usize, vb: VarBuilder) -> Result<Embedding> {
@@ -194,7 +166,7 @@ impl MultiHeadAttention {
         }
         let w = {
             let _enter = self.softmax_span.enter();
-            softmax(&qk, candle::D::Minus1)?
+            softmax(&qk, D::Minus1)?
         };
         let wv = {
             let _enter = self.matmul_span.enter();
@@ -309,11 +281,13 @@ impl AudioEncoder {
             padding: 1,
             stride: 1,
             groups: 1,
+            dilation: 1,
         };
         let cfg2 = Conv1dConfig {
             padding: 1,
             stride: 2,
             groups: 1,
+            dilation: 1,
         };
         let conv1 = conv1d(cfg.num_mel_bins, n_state, 3, cfg1, vb.pp("conv1"))?;
         let conv2 = conv1d(n_state, n_state, 3, cfg2, vb.pp("conv2"))?;
@@ -401,8 +375,7 @@ impl TextDecoder {
 
     pub fn forward(&mut self, x: &Tensor, xa: &Tensor, flush_kv_cache: bool) -> Result<Tensor> {
         let _enter = self.span.enter();
-        let x_dims = x.dims();
-        let last = x_dims[x_dims.len() - 1];
+        let last = x.dim(D::Minus1)?;
         let token_embedding = self.token_embedding.forward(x)?;
         let positional_embedding = self.positional_embedding.narrow(0, 0, last)?;
         let mut x = token_embedding.broadcast_add(&positional_embedding)?;

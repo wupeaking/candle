@@ -10,13 +10,38 @@ and ease of use. Try our online demos:
 [LLaMA2](https://huggingface.co/spaces/lmz/candle-llama2),
 [yolo](https://huggingface.co/spaces/lmz/candle-yolo).
 
-```rust
-let a = Tensor::randn(0f32, 1., (2, 3), &Device::Cpu)?;
-let b = Tensor::randn(0f32, 1., (3, 4), &Device::Cpu)?;
+## Get started
 
-let c = a.matmul(&b)?;
-println!("{c}");
+Make sure that you have [`candle-core`](https://github.com/huggingface/candle/tree/main/candle-core) correctly installed as described in [**Installation**](https://huggingface.github.io/candle/guide/installation.html).
+
+Let's see how to run a simple matrix multiplication.
+Write the following to your `myapp/src/main.rs` file:
+```rust
+use candle_core::{Device, Tensor};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let device = Device::Cpu;
+
+    let a = Tensor::randn(0f32, 1., (2, 3), &device)?;
+    let b = Tensor::randn(0f32, 1., (3, 4), &device)?;
+
+    let c = a.matmul(&b)?;
+    println!("{c}");
+    Ok(())
+}
 ```
+
+`cargo run` should display a tensor of shape `Tensor[[2, 4], f32]`.
+
+
+Having installed `candle` with Cuda support, simply define the `device` to be on GPU:
+
+```diff
+- let device = Device::Cpu;
++ let device = Device::new_cuda(0)?;
+```
+
+For more advanced examples, please have a look at the following section.
 
 ## Check out our examples
 
@@ -29,7 +54,7 @@ Check out our [examples](./candle-examples/examples/):
 - [StarCoder](./candle-examples/examples/bigcode/): LLM specialized to code
   generation.
 - [Stable Diffusion](./candle-examples/examples/stable-diffusion/): text to
-  image generative model.
+  image generative model, support for the 1.5, 2.1, and SDXL 1.0 versions.
 - [DINOv2](./candle-examples/examples/dinov2/): computer vision model trained
   using self-supervision (can be used for imagenet classification, depth
   evaluation, segmentation).
@@ -37,7 +62,8 @@ Check out our [examples](./candle-examples/examples/):
   the LLaMA model using the same quantization techniques as
   [llama.cpp](https://github.com/ggerganov/llama.cpp).
 - [yolo-v3](./candle-examples/examples/yolo-v3/) and
-  [yolo-v8](./candle-examples/examples/yolo-v8/): object detection models.
+  [yolo-v8](./candle-examples/examples/yolo-v8/): object detection and pose
+  estimation models.
 Run them using the following commands:
 ```
 cargo run --example whisper --release
@@ -49,7 +75,7 @@ cargo run --example stable-diffusion --release -- --prompt "a rusty robot holdin
 cargo run --example dinov2 --release -- --image path/to/myinput.jpg
 cargo run --example quantized --release
 cargo run --example yolo-v3 --release -- myimage.jpg
-cargo run --example yolo-v8 --release -- myimage.jpg
+cargo run --example yolo-v8 --release -- myimage.jpg # for pose estimation, add --task pose 
 ```
 
 In order to use **CUDA** add `--features cuda` to the example command line. If
@@ -67,10 +93,10 @@ test server:
 cd candle-wasm-examples/llama2-c
 wget https://huggingface.co/spaces/lmz/candle-llama2/resolve/main/model.bin
 wget https://huggingface.co/spaces/lmz/candle-llama2/resolve/main/tokenizer.json
-trunk serve --release --public-url /candle-llama2/ --port 8081
+trunk serve --release --port 8081
 ```
 And then head over to
-[http://localhost:8081/candle-llama2](http://localhost:8081/candle-llama2).
+[http://localhost:8081/](http://localhost:8081/).
 
 <!--- ANCHOR: features --->
 

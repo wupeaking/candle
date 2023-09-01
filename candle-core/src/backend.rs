@@ -15,6 +15,8 @@ pub trait BackendStorage: Sized {
 
     fn affine(&self, _: &Layout, _: f64, _: f64) -> Result<Self>;
 
+    fn powf(&self, _: &Layout, _: f64) -> Result<Self>;
+
     fn elu(&self, _: &Layout, _: f64) -> Result<Self>;
 
     fn reduce_op(&self, _: ReduceOp, _: &Layout, _: &[usize]) -> Result<Self>;
@@ -43,6 +45,14 @@ pub trait BackendStorage: Sized {
         _kernel: &Self,
         _kernel_l: &Layout,
         _params: &crate::conv::ParamsConv2D,
+    ) -> Result<Self>;
+
+    fn conv_transpose2d(
+        &self,
+        _l: &Layout,
+        _kernel: &Self,
+        _kernel_l: &Layout,
+        _params: &crate::conv::ParamsConvTranspose2D,
     ) -> Result<Self>;
 
     fn avg_pool2d(&self, _: &Layout, _: (usize, usize), _: (usize, usize)) -> Result<Self>;

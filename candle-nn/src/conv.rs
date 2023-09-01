@@ -5,6 +5,7 @@ use candle::{Result, Tensor};
 pub struct Conv1dConfig {
     pub padding: usize,
     pub stride: usize,
+    pub dilation: usize,
     pub groups: usize,
 }
 
@@ -13,6 +14,7 @@ impl Default for Conv1dConfig {
         Self {
             padding: 0,
             stride: 1,
+            dilation: 1,
             groups: 1,
         }
     }
@@ -45,6 +47,7 @@ impl crate::Module for Conv1d {
             &self.weight,
             self.config.padding,
             self.config.stride,
+            self.config.dilation,
             self.config.groups,
         )?;
         match &self.bias {
@@ -62,6 +65,7 @@ impl crate::Module for Conv1d {
 pub struct Conv2dConfig {
     pub padding: usize,
     pub stride: usize,
+    pub dilation: usize,
     pub groups: usize,
 }
 
@@ -70,6 +74,7 @@ impl Default for Conv2dConfig {
         Self {
             padding: 0,
             stride: 1,
+            dilation: 1,
             groups: 1,
         }
     }
@@ -103,6 +108,7 @@ impl crate::Module for Conv2d {
             &self.weight,
             self.config.padding,
             self.config.stride,
+            self.config.dilation,
             self.config.groups,
         )?;
         match &self.bias {
@@ -124,7 +130,7 @@ pub fn conv1d(
     vs: crate::VarBuilder,
 ) -> Result<Conv1d> {
     let init_ws = crate::init::DEFAULT_KAIMING_NORMAL;
-    let ws = vs.get_or_init(
+    let ws = vs.get_with_hints(
         (out_channels, in_channels / cfg.groups, kernel_size),
         "weight",
         init_ws,
@@ -134,7 +140,7 @@ pub fn conv1d(
         lo: -bound,
         up: bound,
     };
-    let bs = vs.get_or_init(out_channels, "bias", init_bs)?;
+    let bs = vs.get_with_hints(out_channels, "bias", init_bs)?;
     Ok(Conv1d::new(ws, Some(bs), cfg))
 }
 
@@ -146,7 +152,7 @@ pub fn conv2d(
     vs: crate::VarBuilder,
 ) -> Result<Conv2d> {
     let init_ws = crate::init::DEFAULT_KAIMING_NORMAL;
-    let ws = vs.get_or_init(
+    let ws = vs.get_with_hints(
         (
             out_channels,
             in_channels / cfg.groups,
@@ -161,7 +167,7 @@ pub fn conv2d(
         lo: -bound,
         up: bound,
     };
-    let bs = vs.get_or_init(out_channels, "bias", init_bs)?;
+    let bs = vs.get_with_hints(out_channels, "bias", init_bs)?;
     Ok(Conv2d::new(ws, Some(bs), cfg))
 }
 
@@ -173,7 +179,7 @@ pub fn conv2d_no_bias(
     vs: crate::VarBuilder,
 ) -> Result<Conv2d> {
     let init_ws = crate::init::DEFAULT_KAIMING_NORMAL;
-    let ws = vs.get_or_init(
+    let ws = vs.get_with_hints(
         (
             out_channels,
             in_channels / cfg.groups,

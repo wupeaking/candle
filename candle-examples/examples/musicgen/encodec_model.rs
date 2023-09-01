@@ -278,6 +278,7 @@ impl EncodecConv1d {
                     padding: 0,
                     stride,
                     groups: 1,
+                    dilation: 1,
                 },
                 vb.pp("conv"),
             )?,
@@ -289,6 +290,7 @@ impl EncodecConv1d {
                     padding: 0,
                     stride,
                     groups: 1,
+                    dilation: 1,
                 },
                 vb.pp("conv"),
             )?,
@@ -368,7 +370,7 @@ impl<'a> Layer<'a> {
         self.cnt += 1;
     }
 
-    fn next(&mut self) -> VarBuilder<'a> {
+    fn next(&mut self) -> VarBuilder {
         let vb = self.vb.pp(&self.cnt.to_string());
         self.cnt += 1;
         vb

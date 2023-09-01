@@ -68,6 +68,19 @@ impl Storage {
         }
     }
 
+    pub(crate) fn powf(&self, layout: &Layout, alpha: f64) -> Result<Self> {
+        match self {
+            Storage::Cpu(storage) => {
+                let storage = storage.powf(layout, alpha)?;
+                Ok(Self::Cpu(storage))
+            }
+            Self::Cuda(storage) => {
+                let storage = storage.powf(layout, alpha)?;
+                Ok(Self::Cuda(storage))
+            }
+        }
+    }
+
     pub(crate) fn elu(&self, layout: &Layout, alpha: f64) -> Result<Self> {
         match self {
             Storage::Cpu(storage) => {
@@ -288,6 +301,33 @@ impl Storage {
                 lhs: lhs.device().location(),
                 rhs: rhs.device().location(),
                 op: "conv2d",
+            }
+            .bt()),
+        }
+    }
+
+    pub(crate) fn conv_transpose2d(
+        &self,
+        l: &Layout,
+        kernel: &Self,
+        kernel_l: &Layout,
+        params: &crate::conv::ParamsConvTranspose2D,
+    ) -> Result<Self> {
+        self.same_device(kernel, "conv_transpose2d")?;
+        self.same_dtype(kernel, "conv_transpose2d")?;
+        match (self, &kernel) {
+            (Storage::Cpu(inp), Storage::Cpu(kernel)) => {
+                let s = inp.conv_transpose2d(l, kernel, kernel_l, params)?;
+                Ok(Self::Cpu(s))
+            }
+            (Storage::Cuda(inp), Storage::Cuda(kernel)) => {
+                let s = inp.conv_transpose2d(l, kernel, kernel_l, params)?;
+                Ok(Self::Cuda(s))
+            }
+            (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
+                lhs: lhs.device().location(),
+                rhs: rhs.device().location(),
+                op: "conv_transpose2d",
             }
             .bt()),
         }

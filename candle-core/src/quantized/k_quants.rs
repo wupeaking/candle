@@ -4,6 +4,7 @@ use super::utils::{
 };
 use super::GgmlDType;
 use crate::Result;
+use byteorder::{ByteOrder, LittleEndian};
 use half::f16;
 use rayon::prelude::*;
 
@@ -253,12 +254,65 @@ impl GgmlType for BlockQ4_1 {
     const BLCK_SIZE: usize = QK4_1;
     type VecDotType = BlockQ8_1;
 
-    fn vec_dot(_n: usize, _xs: &[Self], _ys: &[Self::VecDotType]) -> Result<f32> {
-        todo!()
+    fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> Result<f32> {
+        // ggml_vec_dot_q4_1_q8_1
+        let qk = QK8_1;
+        if n % qk != 0 {
+            crate::bail!("vec_dot_q4_1_q8_1: {n} is not divisible by {qk}")
+        }
+        let nb = n / qk;
+        if nb % 2 != 0 {
+            crate::bail!("vec_dot_q4_1_q8_1: {n}, nb is not divisible by 2")
+        }
+
+        // Generic implementation.
+        let mut sumf = 0f32;
+
+        for (xs, ys) in xs.iter().zip(ys.iter()) {
+            let mut sumi = 0i32;
+
+            for j in 0..qk / 2 {
+                let v0 = xs.qs[j] as i32 & 0x0F;
+                let v1 = xs.qs[j] as i32 >> 4;
+                sumi += (v0 * ys.qs[j] as i32) + (v1 * ys.qs[j + qk / 2] as i32);
+            }
+
+            sumf += sumi as f32 * f16::to_f32(xs.d) * f16::to_f32(ys.d)
+        }
+        Ok(sumf)
     }
 
-    fn from_float(_xs: &[f32], _ys: &mut [Self]) -> Result<()> {
-        todo!()
+    fn from_float(xs: &[f32], ys: &mut [Self]) -> Result<()> {
+        // quantize_row_q4_1
+        let qk = Self::BLCK_SIZE;
+        if ys.len() * qk != xs.len() {
+            crate::bail!("size mismatch {} {} {}", xs.len(), ys.len(), qk,)
+        }
+        for (i, ys) in ys.iter_mut().enumerate() {
+            let xs = &xs[i * qk..(i + 1) * qk];
+
+            let mut min = f32::INFINITY;
+            let mut max = f32::NEG_INFINITY;
+            for &x in xs.iter() {
+                min = f32::min(x, min);
+                max = f32::max(x, max);
+            }
+            let d = (max - min) / ((1 << 4) - 1) as f32;
+            let id = if d != 0f32 { 1. / d } else { 0. };
+            ys.d = f16::from_f32(d);
+            ys.m = f16::from_f32(min);
+
+            for (j, q) in ys.qs.iter_mut().take(qk / 2).enumerate() {
+                let x0 = (xs[j] - min) * id;
+                let x1 = (xs[qk / 2 + j] - min) * id;
+
+                let xi0 = u8::min(15, (x0 + 0.5) as u8);
+                let xi1 = u8::min(15, (x1 + 0.5) as u8);
+
+                *q = xi0 | (xi1 << 4);
+            }
+        }
+        Ok(())
     }
 
     // https://github.com/ggerganov/llama.cpp/blob/468ea24fb4633a0d681f7ac84089566c1c6190cb/ggml.c#L1545
@@ -290,12 +344,71 @@ impl GgmlType for BlockQ5_0 {
     const BLCK_SIZE: usize = QK5_0;
     type VecDotType = BlockQ8_0;
 
-    fn vec_dot(_n: usize, _xs: &[Self], _ys: &[Self::VecDotType]) -> Result<f32> {
-        todo!()
+    fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> Result<f32> {
+        let qk = Self::BLCK_SIZE;
+        if n % Self::BLCK_SIZE != 0 {
+            crate::bail!("vec_dot_q5_0_q8_0: {n} is not divisible by {qk}")
+        }
+        let nb = n / qk;
+        if nb % 2 != 0 {
+            crate::bail!("vec_dot_q5_0_q8_0: {n}, nb is not divisible by 2")
+        }
+
+        // Generic implementation.
+        let mut sumf = 0f32;
+
+        for (xs, ys) in xs.iter().zip(ys.iter()) {
+            let qh = LittleEndian::read_u32(&xs.qh);
+            let mut sumi = 0i32;
+
+            for j in 0..Self::BLCK_SIZE / 2 {
+                let xh_0 = (((qh & (1u32 << j)) >> j) << 4) as u8;
+                let xh_1 = ((qh & (1u32 << (j + 16))) >> (j + 12)) as u8;
+
+                let x0 = ((xs.qs[j] & 0x0F) as i32 | xh_0 as i32) - 16;
+                let x1 = ((xs.qs[j] >> 4) as i32 | xh_1 as i32) - 16;
+
+                sumi += (x0 * ys.qs[j] as i32) + (x1 * ys.qs[j + Self::BLCK_SIZE / 2] as i32);
+            }
+
+            sumf += sumi as f32 * f16::to_f32(xs.d) * f16::to_f32(ys.d)
+        }
+        Ok(sumf)
     }
 
-    fn from_float(_xs: &[f32], _ys: &mut [Self]) -> Result<()> {
-        todo!()
+    fn from_float(xs: &[f32], ys: &mut [Self]) -> Result<()> {
+        // quantize_row_q5_0
+        let k = xs.len();
+        if ys.len() * Self::BLCK_SIZE != k {
+            crate::bail!("size mismatch {k} {} {}", ys.len(), Self::BLCK_SIZE)
+        }
+        for (i, ys) in ys.iter_mut().enumerate() {
+            let xs = &xs[i * Self::BLCK_SIZE..(i + 1) * Self::BLCK_SIZE];
+
+            let mut amax = 0f32;
+            let mut max = 0f32;
+            for &x in xs.iter() {
+                if amax < x.abs() {
+                    amax = x.abs();
+                    max = x;
+                }
+            }
+            let d = max / -16.;
+            let id = if d != 0f32 { 1. / d } else { 0. };
+            ys.d = f16::from_f32(d);
+            let mut qh = 0u32;
+            for j in 0..Self::BLCK_SIZE / 2 {
+                let x0 = xs[j] * id;
+                let x1 = xs[j + Self::BLCK_SIZE / 2] * id;
+                let xi0 = ((x0 + 16.5) as i8).min(31) as u8;
+                let xi1 = ((x1 + 16.5) as i8).min(31) as u8;
+                ys.qs[j] = (xi0 & 0x0F) | ((xi1 & 0x0F) << 4);
+                qh |= ((xi0 as u32 & 0x10) >> 4) << j;
+                qh |= ((xi1 as u32 & 0x10) >> 4) << (j + Self::BLCK_SIZE / 2);
+            }
+            LittleEndian::write_u32(&mut ys.qh, qh)
+        }
+        Ok(())
     }
 
     // https://github.com/ggerganov/llama.cpp/blob/468ea24fb4633a0d681f7ac84089566c1c6190cb/ggml.c#L1566
@@ -308,7 +421,7 @@ impl GgmlType for BlockQ5_0 {
         let nb = k / QK5_0;
         for i in 0..nb {
             let d = xs[i].d.to_f32();
-            let qh: u32 = unsafe { std::mem::transmute_copy(&xs[i].qh) };
+            let qh: u32 = LittleEndian::read_u32(&xs[i].qh);
 
             for j in 0..(QK5_0 / 2) {
                 let xh_0 = (((qh >> j) << 4) & 0x10) as u8;
@@ -330,12 +443,74 @@ impl GgmlType for BlockQ5_1 {
     const BLCK_SIZE: usize = QK5_1;
     type VecDotType = BlockQ8_1;
 
-    fn vec_dot(_n: usize, _xs: &[Self], _ys: &[Self::VecDotType]) -> Result<f32> {
-        todo!()
+    fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> Result<f32> {
+        let qk = Self::BLCK_SIZE;
+        if n % Self::BLCK_SIZE != 0 {
+            crate::bail!("vec_dot_q5_1_q8_1: {n} is not divisible by {qk}")
+        }
+        let nb = n / qk;
+        if nb % 2 != 0 {
+            crate::bail!("vec_dot_q5_1_q8_1: {n}, nb is not divisible by 2")
+        }
+
+        // Generic implementation.
+        let mut sumf = 0f32;
+
+        for (xs, ys) in xs.iter().zip(ys.iter()) {
+            let qh = LittleEndian::read_u32(&xs.qh);
+            let mut sumi = 0i32;
+
+            for j in 0..Self::BLCK_SIZE / 2 {
+                let xh_0 = ((qh >> j) << 4) & 0x10;
+                let xh_1 = (qh >> (j + 12)) & 0x10;
+
+                let x0 = (xs.qs[j] as i32 & 0xF) | xh_0 as i32;
+                let x1 = (xs.qs[j] as i32 >> 4) | xh_1 as i32;
+
+                sumi += (x0 * ys.qs[j] as i32) + (x1 * ys.qs[j + Self::BLCK_SIZE / 2] as i32);
+            }
+
+            sumf += sumi as f32 * f16::to_f32(xs.d) * f16::to_f32(ys.d)
+        }
+        Ok(sumf)
     }
 
-    fn from_float(_xs: &[f32], _ys: &mut [Self]) -> Result<()> {
-        todo!()
+    fn from_float(xs: &[f32], ys: &mut [Self]) -> Result<()> {
+        // quantize_row_q5_1
+        let qk = Self::BLCK_SIZE;
+        if ys.len() * qk != xs.len() {
+            crate::bail!("size mismatch {} {} {}", xs.len(), ys.len(), qk,)
+        }
+        for (i, ys) in ys.iter_mut().enumerate() {
+            let xs = &xs[i * qk..(i + 1) * qk];
+
+            let mut min = f32::INFINITY;
+            let mut max = f32::NEG_INFINITY;
+            for &x in xs.iter() {
+                min = f32::min(x, min);
+                max = f32::max(x, max);
+            }
+            let d = (max - min) / ((1 << 5) - 1) as f32;
+            let id = if d != 0f32 { 1. / d } else { 0. };
+            ys.d = f16::from_f32(d);
+            ys.m = f16::from_f32(min);
+
+            let mut qh = 0u32;
+            for (j, q) in ys.qs.iter_mut().take(qk / 2).enumerate() {
+                let x0 = (xs[j] - min) * id;
+                let x1 = (xs[qk / 2 + j] - min) * id;
+
+                let xi0 = (x0 + 0.5) as u8;
+                let xi1 = (x1 + 0.5) as u8;
+
+                *q = (xi0 & 0x0F) | ((xi1 & 0x0F) << 4);
+                // get the 5-th bit and store it in qh at the right position
+                qh |= ((xi0 as u32 & 0x10) >> 4) << j;
+                qh |= ((xi1 as u32 & 0x10) >> 4) << (j + qk / 2);
+            }
+            LittleEndian::write_u32(&mut ys.qh, qh);
+        }
+        Ok(())
     }
 
     // https://github.com/ggerganov/llama.cpp/blob/468ea24fb4633a0d681f7ac84089566c1c6190cb/ggml.c#L1592
@@ -349,7 +524,7 @@ impl GgmlType for BlockQ5_1 {
         for i in 0..nb {
             let d = xs[i].d.to_f32();
             let m = xs[i].m.to_f32();
-            let qh: u32 = unsafe { std::mem::transmute_copy(&xs[i].qh) };
+            let qh: u32 = LittleEndian::read_u32(&xs[i].qh);
 
             for j in 0..(QK5_1 / 2) {
                 let xh_0 = (((qh >> j) << 4) & 0x10) as u8;
@@ -421,27 +596,73 @@ impl GgmlType for BlockQ8_0 {
         Ok(())
     }
 
-    fn vec_dot(_: usize, _: &[Self], _: &[Self::VecDotType]) -> Result<f32> {
-        todo!()
+    #[allow(unreachable_code)]
+    fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> Result<f32> {
+        #[cfg(target_feature = "avx")]
+        return super::avx::vec_dot_q8_0_q8_0(n, xs, ys);
+
+        #[cfg(target_feature = "neon")]
+        return super::neon::vec_dot_q8_0_q8_0(n, xs, ys);
+
+        let qk = QK8_0;
+        if n % QK8_0 != 0 {
+            crate::bail!("vec_dot_q8_0_q8_0: {n} is not divisible by {qk}")
+        }
+
+        // Generic implementation.
+        let mut sumf = 0f32;
+        for (xs, ys) in xs.iter().zip(ys.iter()) {
+            let sum_i = xs
+                .qs
+                .iter()
+                .zip(ys.qs.iter())
+                .map(|(&x, &y)| x as i32 * y as i32)
+                .sum::<i32>();
+            sumf += sum_i as f32 * f16::to_f32(xs.d) * f16::to_f32(ys.d)
+        }
+        Ok(sumf)
     }
 }
 
 impl GgmlType for BlockQ8_1 {
-    const DTYPE: GgmlDType = GgmlDType::Q3K;
-    const BLCK_SIZE: usize = QK_K;
+    const DTYPE: GgmlDType = GgmlDType::Q8_1;
+    const BLCK_SIZE: usize = QK8_1;
     type VecDotType = BlockQ8_1;
 
     fn vec_dot(_n: usize, _xs: &[Self], _ys: &[Self::VecDotType]) -> Result<f32> {
-        todo!()
+        unimplemented!("no support for vec-dot on Q8_1")
     }
 
-    fn from_float(_xs: &[f32], _ys: &mut [Self]) -> Result<()> {
-        todo!()
+    fn from_float(xs: &[f32], ys: &mut [Self]) -> Result<()> {
+        // quantize_row_q8_1
+        let k = xs.len();
+        if ys.len() * Self::BLCK_SIZE != k {
+            crate::bail!("size mismatch {k} {} {}", ys.len(), Self::BLCK_SIZE)
+        }
+        for (i, ys) in ys.iter_mut().enumerate() {
+            let mut amax = 0f32;
+            let xs = &xs[i * Self::BLCK_SIZE..(i + 1) * Self::BLCK_SIZE];
+            for &x in xs.iter() {
+                amax = amax.max(x.abs())
+            }
+            let d = amax / ((1 << 7) - 1) as f32;
+            let id = if d != 0f32 { 1. / d } else { 0. };
+            ys.d = f16::from_f32(d);
+            let mut sum = 0i32;
+            for j in 0..Self::BLCK_SIZE / 2 {
+                let v0 = xs[j] * id;
+                let v1 = xs[j + Self::BLCK_SIZE / 2] * id;
+                ys.qs[j] = f32::round(v0) as u8;
+                ys.qs[j + Self::BLCK_SIZE / 2] = f32::round(v1) as u8;
+                sum += ys.qs[j] as i32 + ys.qs[j + Self::BLCK_SIZE / 2] as i32;
+            }
+            ys.s = f16::from_f32(sum as f32) * ys.d;
+        }
+        Ok(())
     }
 
-    // https://github.com/ggerganov/llama.cpp/blob/8183159cf3def112f6d1fe94815fce70e1bffa12/k_quants.c#L533
     fn to_float(_xs: &[Self], _ys: &mut [f32]) -> Result<()> {
-        todo!()
+        unimplemented!("no support for vec-dot on Q8_1")
     }
 }
 
@@ -450,8 +671,63 @@ impl GgmlType for BlockQ2K {
     const BLCK_SIZE: usize = QK_K;
     type VecDotType = BlockQ8K;
 
-    fn vec_dot(_n: usize, _xs: &[Self], _ys: &[Self::VecDotType]) -> Result<f32> {
-        todo!()
+    #[allow(unreachable_code)]
+    fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> Result<f32> {
+        #[cfg(target_feature = "avx")]
+        return super::avx::vec_dot_q2k_q8k(n, xs, ys);
+
+        #[cfg(target_feature = "neon")]
+        return super::neon::vec_dot_q2k_q8k(n, xs, ys);
+
+        if n % QK_K != 0 {
+            crate::bail!("vec_dot_q2k_q8k: {n} is not divisible by {QK_K}")
+        }
+
+        let mut sumf = 0.0;
+        for (x, y) in xs.iter().zip(ys.iter()) {
+            let mut q2: &[_] = &x.qs;
+            let mut q8: &[_] = &y.qs;
+            let sc = &x.scales;
+
+            let mut summs = 0;
+            for (bsum, scale) in y.bsums.iter().zip(sc) {
+                summs += *bsum as i32 * ((scale >> 4) as i32);
+            }
+
+            let dall = y.d * x.d.to_f32();
+            let dmin = y.d * x.dmin.to_f32();
+
+            let mut isum = 0;
+            let mut is = 0;
+            let mut d;
+            for _ in 0..(QK_K / 128) {
+                let mut shift = 0;
+                for _ in 0..4 {
+                    d = (sc[is] & 0xF) as i32;
+                    is += 1;
+                    let mut isuml = 0;
+                    for l in 0..16 {
+                        isuml += q8[l] as i32 * (((q2[l] >> shift) & 3) as i32);
+                    }
+                    isum += d * isuml;
+                    d = (sc[is] & 0xF) as i32;
+                    is += 1;
+                    isuml = 0;
+                    for l in 16..32 {
+                        isuml += q8[l] as i32 * (((q2[l] >> shift) & 3) as i32);
+                    }
+                    isum += d * isuml;
+                    shift += 2;
+                    // adjust the indexing
+                    q8 = &q8[32..];
+                }
+                // adjust the indexing
+                q2 = &q2[32..];
+            }
+            sumf += dall * isum as f32 - dmin * summs as f32;
+        }
+
+        Ok(sumf)
     }
 
     // https://github.com/ggerganov/llama.cpp/blob/8183159cf3def112f6d1fe94815fce70e1bffa12/k_quants.c#L279
@@ -565,8 +841,132 @@ impl GgmlType for BlockQ3K {
     const BLCK_SIZE: usize = QK_K;
     type VecDotType = BlockQ8K;
 
-    fn vec_dot(_n: usize, _xs: &[Self], _ys: &[Self::VecDotType]) -> Result<f32> {
-        todo!()
+    #[allow(unreachable_code)]
+    fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> Result<f32> {
+        #[cfg(target_feature = "avx")]
+        return super::avx::vec_dot_q3k_q8k(n, xs, ys);
+
+        #[cfg(target_feature = "neon")]
+        return super::neon::vec_dot_q3k_q8k(n, xs, ys);
+
+        if n % QK_K != 0 {
+            crate::bail!("vec_dot_q3k_q8k: {n} is not divisible by {QK_K}")
+        }
+
+        const KMASK1: u32 = 0x03030303;
+        const KMASK2: u32 = 0x0f0f0f0f;
+
+        let mut aux8: [i8; QK_K] = [0; QK_K];
+        let mut aux16: [i16; 8] = [0; 8];
+        let mut sums: [f32; 8] = [0.0; 8];
+        let mut aux32: [i32; 8] = [0; 8];
+
+        let mut auxs: [u32; 4] = [0; 4];
+
+        for (x, y) in xs.iter().zip(ys.iter()) {
+            let mut q3: &[u8] = &x.qs;
+            let hmask: &[u8] = &x.hmask;
+            let mut q8: &[i8] = &y.qs;
+
+            aux32.fill(0);
+            let mut a = &mut aux8[..];
+
+            let mut m = 1;
+            //Like the GGML original this is written this way to enable the compiler to vectorize it.
+            for _ in 0..QK_K / 128 {
+                a.iter_mut()
+                    .take(32)
+                    .zip(q3)
+                    .for_each(|(a_val, q3_val)| *a_val = (q3_val & 3) as i8);
+                a.iter_mut()
+                    .take(32)
+                    .zip(hmask)
+                    .for_each(|(a_val, hmask_val)| {
+                        *a_val -= if hmask_val & m != 0 { 0 } else { 4 }
+                    });
+                a = &mut a[32..];
+                m <<= 1;
+
+                a.iter_mut()
+                    .take(32)
+                    .zip(q3)
+                    .for_each(|(a_val, q3_val)| *a_val = ((q3_val >> 2) & 3) as i8);
+                a.iter_mut()
+                    .take(32)
+                    .zip(hmask)
+                    .for_each(|(a_val, hmask_val)| {
+                        *a_val -= if hmask_val & m != 0 { 0 } else { 4 }
+                    });
+                a = &mut a[32..];
+                m <<= 1;
+
+                a.iter_mut()
+                    .take(32)
+                    .zip(q3)
+                    .for_each(|(a_val, q3_val)| *a_val = ((q3_val >> 4) & 3) as i8);
+                a.iter_mut()
+                    .take(32)
+                    .zip(hmask)
+                    .for_each(|(a_val, hmask_val)| {
+                        *a_val -= if hmask_val & m != 0 { 0 } else { 4 }
+                    });
+                a = &mut a[32..];
+                m <<= 1;
+
+                a.iter_mut()
+                    .take(32)
+                    .zip(q3)
+                    .for_each(|(a_val, q3_val)| *a_val = ((q3_val >> 6) & 3) as i8);
+                a.iter_mut()
+                    .take(32)
+                    .zip(hmask)
+                    .for_each(|(a_val, hmask_val)| {
+                        *a_val -= if hmask_val & m != 0 { 0 } else { 4 }
+                    });
+                a = &mut a[32..];
+                m <<= 1;
+                q3 = &q3[32..];
+            }
+
+            a = &mut aux8[..];
+
+            LittleEndian::read_u32_into(&x.scales, &mut auxs[0..3]);
+
+            let tmp = auxs[2];
+            auxs[2] = ((auxs[0] >> 4) & KMASK2) | (((tmp >> 4) & KMASK1) << 4);
+            auxs[3] = ((auxs[1] >> 4) & KMASK2) | (((tmp >> 6) & KMASK1) << 4);
+            auxs[0] = (auxs[0] & KMASK2) | (((tmp) & KMASK1) << 4);
+            auxs[1] = (auxs[1] & KMASK2) | (((tmp >> 2) & KMASK1) << 4);
+
+            for aux in auxs {
+                for scale in aux.to_le_bytes() {
+                    let scale = i8::from_be_bytes([scale]);
+                    for l in 0..8 {
+                        aux16[l] = q8[l] as i16 * a[l] as i16;
+                    }
+                    for l in 0..8 {
+                        aux32[l] += (scale as i32 - 32) * aux16[l] as i32;
+                    }
+                    q8 = &q8[8..];
+                    a = &mut a[8..];
+
+                    for l in 0..8 {
+                        aux16[l] = q8[l] as i16 * a[l] as i16;
+                    }
+                    for l in 0..8 {
+                        aux32[l] += (scale as i32 - 32) * aux16[l] as i32;
+                    }
+                    q8 = &q8[8..];
+                    a = &mut a[8..];
+                }
+            }
+            let d = x.d.to_f32() * y.d;
+            for l in 0..8 {
+                sums[l] += d * aux32[l] as f32;
+            }
+        }
+
+        Ok(sums.iter().sum())
     }
 
     fn from_float(xs: &[f32], ys: &mut [Self]) -> Result<()> {
@@ -577,9 +977,12 @@ impl GgmlType for BlockQ3K {
             }
 
             // Get max scale by absolute value.
-            let max_scale = scales
-                .iter()
-                .fold(0.0, |max, &val| if val.abs() > max { val } else { max });
+            let mut max_scale: f32 = 0.0;
+            for &scale in scales.iter() {
+                if scale.abs() > max_scale.abs() {
+                    max_scale = scale;
+                }
+            }
 
             block.scales.fill(0);
 
@@ -657,10 +1060,7 @@ impl GgmlType for BlockQ3K {
         for (block, y) in group_for_dequantization(xs, ys)? {
             //Reconstruct the scales
             let mut aux = [0; 4];
-            let aux_raw = unsafe {
-                std::mem::transmute::<&mut [u8; 12], &mut [u32; 3]>(&mut block.scales.clone())
-            };
-            aux[0..3].copy_from_slice(aux_raw);
+            LittleEndian::read_u32_into(&block.scales, &mut aux[0..3]);
 
             let tmp = aux[2];
             aux[2] = ((aux[0] >> 4) & KMASK2) | (((tmp >> 4) & KMASK1) << 4);
@@ -716,8 +1116,92 @@ impl GgmlType for BlockQ4K {
     const BLCK_SIZE: usize = QK_K;
     type VecDotType = BlockQ8K;
 
-    fn vec_dot(_n: usize, _xs: &[Self], _ys: &[Self::VecDotType]) -> Result<f32> {
-        todo!()
+    #[allow(unreachable_code)]
+    fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> Result<f32> {
+        #[cfg(target_feature = "avx")]
+        return super::avx::vec_dot_q4k_q8k(n, xs, ys);
+
+        #[cfg(target_feature = "neon")]
+        return super::neon::vec_dot_q4k_q8k(n, xs, ys);
+
+        if n % QK_K != 0 {
+            crate::bail!("vec_dot_q4k_q8k: {n} is not divisible by {QK_K}")
+        }
+
+        const KMASK1: u32 = 0x3f3f3f3f;
+        const KMASK2: u32 = 0x0f0f0f0f;
+        const KMASK3: u32 = 0x03030303;
+
+        let mut utmp: [u32; 4] = [0; 4];
+        let mut scales: [u8; 8] = [0; 8];
+        let mut mins: [u8; 8] = [0; 8];
+
+        let mut aux8: [i8; QK_K] = [0; QK_K];
+        let mut aux16: [i16; 8] = [0; 8];
+        let mut sums: [f32; 8] = [0.0; 8];
+        let mut aux32: [i32; 8] = [0; 8];
+
+        let mut sumf = 0.0;
+        for (y, x) in ys.iter().zip(xs.iter()) {
+            let q4 = &x.qs;
+            let q8 = &y.qs;
+            aux32.fill(0);
+
+            let mut a = &mut aux8[..];
+            let mut q4 = &q4[..];
+            for _ in 0..QK_K / 64 {
+                for l in 0..32 {
+                    a[l] = (q4[l] & 0xF) as i8;
+                }
+                a = &mut a[32..];
+                for l in 0..32 {
+                    a[l] = (q4[l] >> 4) as i8;
+                }
+                a = &mut a[32..];
+                q4 = &q4[32..];
+            }
+
+            LittleEndian::read_u32_into(&x.scales, &mut utmp[0..3]);
+
+            utmp[3] = ((utmp[2] >> 4) & KMASK2) | (((utmp[1] >> 6) & KMASK3) << 4);
+            let uaux = utmp[1] & KMASK1;
+            utmp[1] = (utmp[2] & KMASK2) | (((utmp[0] >> 6) & KMASK3) << 4);
+            utmp[2] = uaux;
+            utmp[0] &= KMASK1;
+
+            //extract scales and mins
+            LittleEndian::write_u32_into(&utmp[0..2], &mut scales);
+            LittleEndian::write_u32_into(&utmp[2..4], &mut mins);
+
+            let mut sumi = 0;
+            for j in 0..QK_K / 16 {
+                sumi += y.bsums[j] as i32 * mins[j / 2] as i32;
+            }
+
+            let mut a = &mut aux8[..];
+            let mut q8 = &q8[..];
+
+            for scale in scales {
+                let scale = scale as i32;
+                for _ in 0..4 {
+                    for l in 0..8 {
+                        aux16[l] = q8[l] as i16 * a[l] as i16;
+                    }
+                    for l in 0..8 {
+                        aux32[l] += scale * aux16[l] as i32;
+                    }
+                    q8 = &q8[8..];
+                    a = &mut a[8..];
+                }
+            }
+            let d = x.d.to_f32() * y.d;
+            for l in 0..8 {
+                sums[l] += d * aux32[l] as f32;
+            }
+            let dmin = x.dmin.to_f32() * y.d;
+            sumf -= dmin * sumi as f32;
+        }
+        Ok(sumf + sums.iter().sum::<f32>())
     }
 
     fn from_float(xs: &[f32], ys: &mut [Self]) -> Result<()> {
@@ -818,8 +1302,99 @@ impl GgmlType for BlockQ5K {
     const BLCK_SIZE: usize = QK_K;
     type VecDotType = BlockQ8K;
 
-    fn vec_dot(_n: usize, _xs: &[Self], _ys: &[Self::VecDotType]) -> Result<f32> {
-        todo!()
+    #[allow(unreachable_code)]
+    fn vec_dot(n: usize, xs: &[Self], ys: &[Self::VecDotType]) -> Result<f32> {
+        #[cfg(target_feature = "avx")]
+        return super::avx::vec_dot_q5k_q8k(n, xs, ys);
+
+        #[cfg(target_feature = "neon")]
+        return super::neon::vec_dot_q5k_q8k(n, xs, ys);
+
+        if n % QK_K != 0 {
+            crate::bail!("vec_dot_q5k_q8k: {n} is not divisible by {QK_K}")
+        }
+
+        const KMASK1: u32 = 0x3f3f3f3f;
+        const KMASK2: u32 = 0x0f0f0f0f;
+        const KMASK3: u32 = 0x03030303;
+
+        let mut utmp: [u32; 4] = [0; 4];
+        let mut scales: [u8; 8] = [0; 8];
+        let mut mins: [u8; 8] = [0; 8];
+
+        let mut aux8: [i8; QK_K] = [0; QK_K];
+        let mut aux16: [i16; 8] = [0; 8];
+        let mut sums: [f32; 8] = [0.0; 8];
+        let mut aux32: [i32; 8] = [0; 8];
+
+        let mut sumf = 0.0;
+        for (y, x) in ys.iter().zip(xs.iter()) {
+            let q5 = &x.qs;
+            let hm = &x.qh;
+            let q8 = &y.qs;
+            aux32.fill(0);
+
+            let mut a = &mut aux8[..];
+            let mut q5 = &q5[..];
+            let mut m = 1u8;
+
+            for _ in 0..QK_K / 64 {
+                for l in 0..32 {
+                    a[l] = (q5[l] & 0xF) as i8;
+                    a[l] += if hm[l] & m != 0 { 16 } else { 0 };
+                }
+                a = &mut a[32..];
+                m <<= 1;
+                for l in 0..32 {
+                    a[l] = (q5[l] >> 4) as i8;
+                    a[l] += if hm[l] & m != 0 { 16 } else { 0 };
+                }
+                a = &mut a[32..];
+                m <<= 1;
+                q5 = &q5[32..];
+            }
+
+            LittleEndian::read_u32_into(&x.scales, &mut utmp[0..3]);
+
+            utmp[3] = ((utmp[2] >> 4) & KMASK2) | (((utmp[1] >> 6) & KMASK3) << 4);
+            let uaux = utmp[1] & KMASK1;
+            utmp[1] = (utmp[2] & KMASK2) | (((utmp[0] >> 6) & KMASK3) << 4);
+            utmp[2] = uaux;
+            utmp[0] &= KMASK1;
+
+            //extract scales and mins
+            LittleEndian::write_u32_into(&utmp[0..2], &mut scales);
+            LittleEndian::write_u32_into(&utmp[2..4], &mut mins);
+
+            let mut sumi = 0;
+            for j in 0..QK_K / 16 {
+                sumi += y.bsums[j] as i32 * mins[j / 2] as i32;
+            }
+
+            let mut a = &mut aux8[..];
+            let mut q8 = &q8[..];
+
+            for scale in scales {
+                let scale = scale as i32;
+                for _ in 0..4 {
+                    for l in 0..8 {
+                        aux16[l] = q8[l] as i16 * a[l] as i16;
+                    }
+                    for l in 0..8 {
+                        aux32[l] += scale * aux16[l] as i32;
+                    }
+                    q8 = &q8[8..];
+                    a = &mut a[8..];
+                }
+            }
+            let d = x.d.to_f32() * y.d;
+            for l in 0..8 {
+                sums[l] += d * aux32[l] as f32;
+            }
+            let dmin = x.dmin.to_f32() * y.d;
+            sumf -= dmin * sumi as f32;
+        }
+        Ok(sumf + sums.iter().sum::<f32>())
     }
 
     // https://github.com/ggerganov/llama.cpp/blob/8183159cf3def112f6d1fe94815fce70e1bffa12/k_quants.c#L793

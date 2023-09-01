@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```rust
-//! use candle::{Tensor, Device::Cpu};
+//! use candle::{Tensor, Device::Cpu, test_utils::to_vec3_round};
 //! use candle_nn::{LayerNorm, Module};
 //! # fn main() -> candle::Result<()> {
 //!
@@ -20,10 +20,10 @@
 //!     &Cpu)?;
 //! let ys = layer.forward(&xs)?;
 //! assert_eq!(
-//!     ys.to_vec3::<f32>()?,
-//!     &[[[-1.2247356, 0.0,  1.2247356],
-//!        [-1.2247356, 0.0,  1.2247356],
-//!        [ 1.2247356, 0.0, -1.2247356]]]);
+//!     to_vec3_round(&ys, 4)?,
+//!     &[[[-1.2247, 0.0,  1.2247],
+//!        [-1.2247, 0.0,  1.2247],
+//!        [ 1.2247, 0.0, -1.2247]]]);
 //! # Ok(()) }
 //! ```
 //!
@@ -128,9 +128,9 @@ pub fn layer_norm<C: Into<LayerNormConfig>>(
     vb: crate::VarBuilder,
 ) -> Result<LayerNorm> {
     let config = config.into();
-    let weight = vb.get_or_init(size, "weight", crate::Init::Const(1.))?;
+    let weight = vb.get_with_hints(size, "weight", crate::Init::Const(1.))?;
     let bias = if config.affine {
-        Some(vb.get_or_init(size, "bias", crate::Init::Const(0.))?)
+        Some(vb.get_with_hints(size, "bias", crate::Init::Const(0.))?)
     } else {
         None
     };

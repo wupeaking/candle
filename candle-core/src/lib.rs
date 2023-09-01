@@ -63,6 +63,7 @@ pub mod shape;
 mod storage;
 mod strided_index;
 mod tensor;
+pub mod test_utils;
 pub mod utils;
 mod variable;
 
@@ -87,3 +88,39 @@ pub use dummy_cuda_backend::{CudaDevice, CudaStorage};
 
 #[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
+
+#[cfg(feature = "accelerate")]
+extern crate accelerate_src;
+
+pub trait ToUsize2 {
+    fn to_usize2(self) -> (usize, usize);
+}
+
+impl ToUsize2 for usize {
+    fn to_usize2(self) -> (usize, usize) {
+        (self, self)
+    }
+}
+
+impl ToUsize2 for (usize, usize) {
+    fn to_usize2(self) -> (usize, usize) {
+        self
+    }
+}
+
+// A simple trait defining a module with forward method using a single argument.
+pub trait Module: std::fmt::Debug {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor>;
+
+    /// Change the module to use training mode vs eval mode.
+    ///
+    /// The default implementation does nothing as this is only used for a couple modules such as
+    /// dropout or batch-normalization.
+    fn set_training(&mut self, _training: bool) {}
+}
+
+impl Module for quantized::QMatMul {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+        self.forward(xs)
+    }
+}

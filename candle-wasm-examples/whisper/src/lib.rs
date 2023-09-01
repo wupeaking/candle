@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub const WITH_TIMER: bool = true;
 
 struct Timer {
@@ -26,6 +24,6 @@ impl Drop for Timer {
 mod app;
 mod audio;
 mod model;
-mod worker;
+pub mod worker;
 pub use app::App;
 pub use worker::Worker;
