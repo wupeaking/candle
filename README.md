@@ -1,5 +1,5 @@
 # candle
-[![discord server](https://dcbadge.vercel.app/api/server/hugging-face-879548962464493619)](https://discord.com/channels/879548962464493619/1136218819447238726)
+[![discord server](https://dcbadge.vercel.app/api/server/hugging-face-879548962464493619)](https://discord.gg/hugging-face-879548962464493619)
 [![Latest version](https://img.shields.io/crates/v/candle-core.svg)](https://crates.io/crates/candle-core)
 [![Documentation](https://docs.rs/candle-core/badge.svg)](https://docs.rs/candle-core)
 ![License](https://img.shields.io/crates/l/candle-core.svg)
@@ -226,6 +226,22 @@ this, you have to register on the huggingface-hub, accept the [LLaMA-v2 model
 conditions](https://huggingface.co/meta-llama/Llama-2-7b-hf), and set up your
 authentication token. See issue
 [#350](https://github.com/huggingface/candle/issues/350) for more details.
+
+#### Missing cute/cutlass headers when compiling flash-attn
+
+```
+  In file included from kernels/flash_fwd_launch_template.h:11:0,
+                   from kernels/flash_fwd_hdim224_fp16_sm80.cu:5:
+  kernels/flash_fwd_kernel.h:8:10: fatal error: cute/algorithm/copy.hpp: No such file or directory
+   #include <cute/algorithm/copy.hpp>
+            ^~~~~~~~~~~~~~~~~~~~~~~~~
+  compilation terminated.
+  Error: nvcc error while compiling:
+```
+[cutlass](https://github.com/NVIDIA/cutlass) is provided as a git submodule so you may want to run the following command to check it in properly.
+```bash
+git submodule update --init
+```
 
 #### Tracking down errors
 
