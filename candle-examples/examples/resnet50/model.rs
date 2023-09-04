@@ -286,11 +286,11 @@ impl Restnet {
         let y = y
             .pad_with_zeros(D::Minus1, 1, 1)?
             .pad_with_zeros(D::Minus2, 1, 1)?;
-        let y = y.max_pool2d((3, 3), (2, 2))?;
+        let y = y.max_pool2d_with_stride((3, 3), (2, 2))?;
         // println!("y: {:?}", y);
         let y = self.blocks.forward(&y)?;
         // println!("y: {:?}", y);
-        let y = y.avg_pool2d((7, 7), (1, 1))?;
+        let y = y.avg_pool2d_with_stride((7, 7), (1, 1))?;
         let y = y.flatten_from(1)?;
         Ok(self.linear.forward(&y)?)
     }

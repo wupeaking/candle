@@ -278,6 +278,9 @@ pub struct Args {
     /// The size for the legend, 0 means no legend.
     #[arg(long, default_value_t = 14)]
     legend_size: u32,
+
+    #[arg(long)]
+    cpu: bool,
 }
 
 impl Args {
@@ -371,10 +374,11 @@ pub fn run<T: Task>(args: Args) -> anyhow::Result<()> {
         Which::L => Multiples::l(),
         Which::X => Multiples::x(),
     };
+    let device = candle_examples::device(args.cpu)?;
     let model = args.model()?;
     let weights = unsafe { candle::safetensors::MmapedFile::new(model)? };
     let weights = weights.deserialize()?;
-    let vb = VarBuilder::from_safetensors(vec![weights], DType::F32, &Device::Cpu);
+    let vb = VarBuilder::from_safetensors(vec![weights], DType::F32, &device);
     let model = T::load(vb, multiples)?;
     println!("model loaded");
     for image_name in args.images.iter() {
@@ -405,11 +409,12 @@ pub fn run<T: Task>(args: Args) -> anyhow::Result<()> {
             Tensor::from_vec(
                 data,
                 (img.height() as usize, img.width() as usize, 3),
-                &Device::Cpu,
+                &device,
             )?
             .permute((2, 0, 1))?
         };
         let image_t = (image_t.unsqueeze(0)?.to_dtype(DType::F32)? * (1. / 255.))?;
+        println!("start predictions ...");
         let predictions = model.forward(&image_t)?.squeeze(0)?;
         println!("generated predictions {predictions:?}");
         let image_t = T::report(
