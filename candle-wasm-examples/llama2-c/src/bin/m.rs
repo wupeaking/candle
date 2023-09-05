@@ -60,11 +60,17 @@ impl Model {
     }
 
     #[wasm_bindgen]
+    pub fn get_seq_len(&mut self) -> usize {
+        self.inner.config.seq_len
+    }
+
+    #[wasm_bindgen]
     pub fn init_with_prompt(
         &mut self,
         prompt: String,
         temp: f64,
         repeat_penalty: f32,
+        seed: u64,
     ) -> Result<String, JsError> {
         // First reset the cache.
         {
@@ -74,13 +80,13 @@ impl Model {
             }
         }
         let temp = if temp <= 0. { None } else { Some(temp) };
-        self.logits_processor = LogitsProcessor::new(299792458, temp);
+        self.logits_processor = LogitsProcessor::new(seed, temp);
         self.repeat_penalty = repeat_penalty;
         self.tokens.clear();
         let tokens = self
             .inner
             .tokenizer
-            .encode(prompt.to_string(), true)
+            .encode(prompt, true)
             .map_err(|m| JsError::new(&m.to_string()))?
             .get_ids()
             .to_vec();
