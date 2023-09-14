@@ -116,6 +116,7 @@ pub enum Op {
         stride: (usize, usize),
     },
 
+    UpsampleNearest1D(Tensor),
     UpsampleNearest2D(Tensor),
 
     Cat(Vec<Tensor>, usize),
@@ -599,6 +600,24 @@ impl UnaryOpT for Gelu {
     #[inline(always)]
     fn f64_vec(xs: &[f64], ys: &mut [f64]) {
         crate::mkl::vd_gelu(xs, ys)
+    }
+
+    #[cfg(feature = "accelerate")]
+    const F32_VEC: bool = true;
+
+    #[cfg(feature = "accelerate")]
+    #[inline(always)]
+    fn f32_vec(xs: &[f32], ys: &mut [f32]) {
+        crate::accelerate::vs_gelu(xs, ys)
+    }
+
+    #[cfg(feature = "accelerate")]
+    const F64_VEC: bool = true;
+
+    #[cfg(feature = "accelerate")]
+    #[inline(always)]
+    fn f64_vec(xs: &[f64], ys: &mut [f64]) {
+        crate::accelerate::vd_gelu(xs, ys)
     }
 }
 

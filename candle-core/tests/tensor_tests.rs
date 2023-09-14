@@ -33,6 +33,17 @@ fn tensor_2d(device: &Device) -> Result<()> {
     Ok(())
 }
 
+fn clamp(device: &Device) -> Result<()> {
+    let data = &[[3f32, 1., 4., 1., 5.], [2., 1., 7., 8., 2.]];
+    let tensor = Tensor::new(data, device)?;
+    let tensor = tensor.clamp(1.5, 6.2)?;
+    assert_eq!(
+        tensor.to_vec2::<f32>()?,
+        [[3.0, 1.5, 4.0, 1.5, 5.0], [2.0, 1.5, 6.2, 6.2, 2.0]],
+    );
+    Ok(())
+}
+
 fn binary_op(device: &Device) -> Result<()> {
     let data = &[[3f32, 1., 4., 1., 5.], [2., 1., 7., 8., 2.]];
     let tensor1 = Tensor::new(data, device)?;
@@ -877,6 +888,14 @@ fn broadcasting(device: &Device) -> Result<()> {
     Ok(())
 }
 
+fn randn(device: &Device) -> Result<()> {
+    let tensor = Tensor::randn(0f32, 1f32, (5, 3), device)?;
+    assert_eq!(tensor.dims(), [5, 3]);
+    let tensor = Tensor::rand(0f32, 1f32, (5, 3), device)?;
+    assert_eq!(tensor.dims(), [5, 3]);
+    Ok(())
+}
+
 test_device!(zeros, zeros_cpu, zeros_gpu);
 test_device!(add_mul, add_mul_cpu, add_mul_gpu);
 test_device!(tensor_2d, tensor_2d_cpu, tensor_2d_gpu);
@@ -899,6 +918,8 @@ test_device!(index_select, index_select_cpu, index_select_gpu);
 test_device!(index_add, index_add_cpu, index_add_gpu);
 test_device!(gather, gather_cpu, gather_gpu);
 test_device!(scatter_add, scatter_add_cpu, scatter_add_gpu);
+test_device!(randn, randn_cpu, randn_gpu);
+test_device!(clamp, clamp_cpu, clamp_gpu);
 
 // There was originally a bug on the CPU implementation for randn
 // https://github.com/huggingface/candle/issues/381

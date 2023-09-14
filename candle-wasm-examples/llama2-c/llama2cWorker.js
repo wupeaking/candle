@@ -1,13 +1,17 @@
 import init, { Model } from "./build/m.js";
 
 async function fetchArrayBuffer(url) {
-  const res = await fetch(url, {
-    cache: "force-cache",
-  });
-  const data = await res.arrayBuffer();
-  return new Uint8Array(data);
+  const cacheName = "llama2c-candle-cache";
+  const cache = await caches.open(cacheName);
+  const cachedResponse = await cache.match(url);
+  if (cachedResponse) {
+    const data = await cachedResponse.arrayBuffer();
+    return new Uint8Array(data);
+  }
+  const res = await fetch(url, { cache: "force-cache" });
+  cache.put(url, res.clone());
+  return new Uint8Array(await res.arrayBuffer());
 }
-
 class Llama2C {
   static instance = {};
 
@@ -60,9 +64,10 @@ async function generate(data) {
     const seq_len = model.get_seq_len();
 
     let sentence = "";
-    let max_tokens = maxSeqLen ? maxSeqLen : seq_len - prompt.length - 1;
-
-    while (max_tokens--) {
+    let maxTokens = maxSeqLen ? maxSeqLen : seq_len - prompt.length - 1;
+    let startTime = performance.now();
+    let tokensCount = 0;
+    while (tokensCount < maxTokens) {
       await new Promise(async (resolve) => {
         if (controller && controller.signal.aborted) {
           self.postMessage({
@@ -73,6 +78,8 @@ async function generate(data) {
           return;
         }
         const token = await model.next_token();
+        const tokensSec =
+          ((tokensCount + 1) / (performance.now() - startTime)) * 1000;
 
         sentence += token;
         self.postMessage({
@@ -80,10 +87,13 @@ async function generate(data) {
           message: "Generating token",
           token: token,
           sentence: sentence,
+          totalTime: performance.now() - startTime,
+          tokensSec,
           prompt: prompt,
         });
         setTimeout(resolve, 0);
       });
+      tokensCount++;
     }
     self.postMessage({
       status: "complete",

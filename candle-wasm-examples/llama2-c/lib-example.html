@@ -38,11 +38,11 @@
         },
         stories42M: {
           url: "stories42M.bin",
-          seq_len: 256,
+          seq_len: 1024,
         },
         stories110M: {
           url: "stories110M.bin",
-          seq_len: 256,
+          seq_len: 1024,
         },
       };
 
@@ -56,27 +56,35 @@
         const weightsURL = `${MODELS_BASE_URL}/${model.url}`;
         const prompt = getValue("prompt");
         const temperature = getValue("temperature");
+        const topP = getValue("top-p");
         const repeatPenalty = getValue("repeat_penalty");
         const seed = getValue("seed");
         const maxSeqLen = getValue("max-seq");
 
-        function updateStatus({ status, message, prompt, sentence }) {
+        function updateStatus(data) {
           const outStatus = document.querySelector("#output-status");
           const outGen = document.querySelector("#output-generation");
+          const outCounter = document.querySelector("#output-counter");
 
-          switch (status) {
+          switch (data.status) {
             case "loading":
               outStatus.hidden = false;
-              outStatus.textContent = message;
+              outStatus.textContent = data.message;
               outGen.hidden = true;
+              outCounter.hidden = true;
               break;
             case "generating":
+              const { message, prompt, sentence, tokensSec, totalTime } = data;
               outStatus.hidden = true;
+              outCounter.hidden = false;
               outGen.hidden = false;
               outGen.innerHTML = `<span class="font-semibold">${prompt}</span>${sentence.replace(
                 /\<s\>|\<\/s\>/g,
                 ""
               )}`;
+              outCounter.innerHTML = `${(totalTime / 1000).toFixed(
+                2
+              )}s (${tokensSec.toFixed(2)} tok/s)`;
               break;
             case "complete":
               outStatus.hidden = true;
@@ -92,6 +100,7 @@
             tokenizerURL: "tokenizer.json",
             prompt,
             temp: temperature,
+            top_p: topP,
             repeatPenalty,
             seed: BigInt(seed),
             maxSeqLen,
@@ -117,8 +126,16 @@
       const prompt = document.querySelector("#prompt");
       const clearBtn = document.querySelector("#clear-btn");
       const runBtn = document.querySelector("#run");
+      const modelSelect = document.querySelector("#model");
       let runController = new AbortController();
       let isRunning = false;
+
+      modelSelect.addEventListener("change", (e) => {
+        const model = MODELS[e.target.value];
+        document.querySelector("#max-seq").max = model.seq_len;
+        document.querySelector("#max-seq").nextElementSibling.value =
+          model.seq_len;
+      });
 
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -206,8 +223,9 @@
           id="prompt"
           class="font-light w-full px-3 py-2 mx-1 resize-none outline-none"
           placeholder="Add your prompt here..."
+          value="Once upon a time"
         />
-        <button class="invisible" id="clear-btn">
+        <button id="clear-btn">
           <svg
             fill="none"
             xmlns="http://www.w3.org/2000/svg"
@@ -225,7 +243,6 @@
         </button>
         <button
           id="run"
-          disabled
           class="bg-gray-700 hover:bg-gray-800 text-white font-normal py-2 w-16 rounded disabled:bg-gray-300 disabled:cursor-not-allowed"
         >
           Run
@@ -236,7 +253,7 @@
         <input
           type="range"
           id="max-seq"
-          name="temperature"
+          name="max-seq"
           min="1"
           max="256"
           step="1"
@@ -263,6 +280,22 @@
           class="text-xs w-[50px] text-center font-light px-1 py-1 border border-gray-700 rounded-md"
         >
           0.50</output
+        >
+        <label class="text-sm font-medium" for="top-p">Top-p</label>
+        <input
+          type="range"
+          id="top-p"
+          name="top-p"
+          min="0"
+          max="1"
+          step="0.01"
+          value="1.00"
+          oninput="this.nextElementSibling.value = Number(this.value).toFixed(2)"
+        />
+        <output
+          class="text-xs w-[50px] text-center font-light px-1 py-1 border border-gray-700 rounded-md"
+        >
+          1.00</output
         >
 
         <label class="text-sm font-medium" for="repeat_penalty"
@@ -291,17 +324,26 @@
           value="299792458"
           class="font-light border border-gray-700 text-right rounded-md p-2"
         />
+        <button
+          id="run"
+          onclick="document.querySelector('#seed').value = BigInt(Math.floor(Math.random() * 2**64-1))"
+          class="bg-gray-700 hover:bg-gray-800 text-white font-normal py-1 w-[50px] rounded disabled:bg-gray-300 disabled:cursor-not-allowed text-sm"
+        >
+          Rand
+        </button>
       </div>
       <div>
         <h3 class="font-medium">Generation:</h3>
-
         <div
-          class="min-h-[250px] bg-slate-100 text-gray-500 p-4 rounded-md grid"
+          class="min-h-[250px] bg-slate-100 text-gray-500 p-4 rounded-md flex flex-col gap-2"
         >
-          <p hidden id="output-generation"></p>
-          <span
-            id="output-status"
-            class="justify-self-center self-center font-light"
+          <div
+            id="output-counter"
+            hidden
+            class="ml-auto font-semibold grid-rows-1 text-sm"
+          ></div>
+          <p hidden id="output-generation" class="grid-rows-2"></p>
+          <span id="output-status" class="m-auto font-light"
             >No output yet</span
           >
         </div>
