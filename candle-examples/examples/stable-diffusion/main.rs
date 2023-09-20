@@ -378,7 +378,7 @@ fn run(args: Args) -> Result<()> {
     };
 
     let scheduler = sd_config.build_scheduler(n_steps)?;
-    let device = candle_examples::device(cpu)?;
+    let device = candle_examples::device_n::<1>(cpu)?;
 
     let which = match sd_version {
         StableDiffusionVersion::Xl => vec![true, false],

@@ -15,6 +15,18 @@ pub fn device(cpu: bool) -> Result<Device> {
     }
 }
 
+pub fn device_n<const N: usize>(cpu: bool) -> Result<Device> {
+    if cpu {
+        Ok(Device::Cpu)
+    } else {
+        let device = Device::cuda_if_available(N)?;
+        if !device.is_cuda() {
+            println!("Running on CPU, to run on GPU, build this example with `--features cuda`");
+        }
+        Ok(device)
+    }
+}
+
 pub fn load_image<P: AsRef<std::path::Path>>(
     p: P,
     resize_longest: Option<usize>,
