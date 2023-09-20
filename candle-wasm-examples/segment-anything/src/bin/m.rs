@@ -76,7 +76,7 @@ impl Model {
     }
 
     // x and y have to be between 0 and 1
-    pub fn mask_for_point(&self, x: f64, y: f64) -> Result<String, JsError> {
+    pub fn mask_for_point(&self, x: f64, y: f64) -> Result<JsValue, JsError> {
         if !(0. ..=1.).contains(&x) {
             Err(JsError::new(&format!(
                 "x has to be between 0 and 1, got {x}"
@@ -98,7 +98,7 @@ impl Model {
             Some((x, y)),
             false,
         )?;
-        let iou = iou_predictions.to_vec1::<f32>()?[0];
+        let iou = iou_predictions.flatten(0, 1)?.to_vec1::<f32>()?[0];
         let mask_shape = mask.dims().to_vec();
         let mask_data = mask.ge(0f32)?.flatten_all()?.to_vec1::<u8>()?;
         let mask = Mask {
@@ -106,8 +106,13 @@ impl Model {
             mask_shape,
             mask_data,
         };
-        let json = serde_json::to_string(&mask)?;
-        Ok(json)
+        let image = Image {
+            original_width: embeddings.original_width,
+            original_height: embeddings.original_height,
+            width: embeddings.width,
+            height: embeddings.height,
+        };
+        Ok(serde_wasm_bindgen::to_value(&MaskImage { mask, image })?)
     }
 }
 
@@ -116,6 +121,18 @@ struct Mask {
     iou: f32,
     mask_shape: Vec<usize>,
     mask_data: Vec<u8>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Image {
+    original_width: u32,
+    original_height: u32,
+    width: u32,
+    height: u32,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MaskImage {
+    mask: Mask,
+    image: Image,
 }
 
 fn main() {
