@@ -50,14 +50,9 @@ pub(crate) unsafe fn mul_sum_i8_pairs_float(x: __m256i, y: __m256i) -> __m256 {
 #[inline(always)]
 pub(crate) fn vec_dot_q4_0_q8_0(n: usize, xs: &[BlockQ4_0], ys: &[BlockQ8_0]) -> Result<f32> {
     let qk = QK8_0;
-    let nb = n / qk;
     if n % QK8_0 != 0 {
         crate::bail!("vec_dot_q4_0_q8_0: {n} is not divisible by {qk}")
     }
-    if nb % 2 != 0 {
-        crate::bail!("vec_dot_q4_0_q8_0: {nb} is not even")
-    }
-
     unsafe {
         let mut acc = _mm256_setzero_ps();
         for (x, y) in xs.iter().zip(ys.iter()) {
@@ -636,5 +631,37 @@ pub(crate) fn vec_dot_q5k_q8k(n: usize, xs: &[BlockQ5K], ys: &[BlockQ8K]) -> Res
             acc = _mm256_fmadd_ps(vd, _mm256_cvtepi32_ps(sumi), acc);
         }
         Ok(hsum_float_8(acc) + summs)
+    }
+}
+
+#[inline(always)]
+pub(crate) fn vec_dot_q8k_q8k(n: usize, xs: &[BlockQ8K], ys: &[BlockQ8K]) -> Result<f32> {
+    let qk = QK_K;
+    if n % qk != 0 {
+        crate::bail!("vec_dot_q8k_8k: {n} is not divisible by {qk}")
+    }
+
+    unsafe {
+        let mut acc = _mm256_setzero_ps();
+        for (xs, ys) in xs.iter().zip(ys.iter()) {
+            let mut sumi = _mm256_setzero_si256();
+            let x_qs = xs.qs.as_ptr();
+            let y_qs = ys.qs.as_ptr();
+            for j in (0..QK_K).step_by(32) {
+                let xs = _mm256_loadu_si256(x_qs.add(j) as *const __m256i);
+                let ys = _mm256_loadu_si256(y_qs.add(j) as *const __m256i);
+
+                let xs0 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(xs, 0));
+                let ys0 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(ys, 0));
+                sumi = _mm256_add_epi32(sumi, _mm256_madd_epi16(xs0, ys0));
+
+                let xs1 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(xs, 1));
+                let ys1 = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(ys, 1));
+                sumi = _mm256_add_epi32(sumi, _mm256_madd_epi16(xs1, ys1));
+            }
+            let d = _mm256_set1_ps(xs.d * ys.d);
+            acc = _mm256_fmadd_ps(d, _mm256_cvtepi32_ps(sumi), acc);
+        }
+        Ok(hsum_float_8(acc))
     }
 }

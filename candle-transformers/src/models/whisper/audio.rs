@@ -58,8 +58,7 @@ fn dft<T: Float>(inp: &[T]) -> Vec<T> {
     let n = inp.len();
     let two_pi = T::PI() + T::PI();
 
-    let mut out = Vec::new();
-    out.reserve(2 * n);
+    let mut out = Vec::with_capacity(2 * n);
     let n_t = T::from(n).unwrap();
     for k in 0..n {
         let k_t = T::from(k).unwrap();
@@ -198,13 +197,17 @@ fn log_mel_spectrogram_<T: Float + std::fmt::Display>(
     mel
 }
 
-pub fn pcm_to_mel<T: Float + std::fmt::Display>(samples: &[T], filters: &[T]) -> Vec<T> {
+pub fn pcm_to_mel<T: Float + std::fmt::Display>(
+    cfg: &super::Config,
+    samples: &[T],
+    filters: &[T],
+) -> Vec<T> {
     log_mel_spectrogram_(
         samples,
         filters,
         super::N_FFT,
         super::HOP_LENGTH,
-        super::N_MELS,
+        cfg.num_mel_bins,
         false,
     )
 }

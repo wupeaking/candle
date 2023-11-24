@@ -97,14 +97,13 @@ struct Args {
     img2img_strength: f64,
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, clap::ValueEnum, PartialEq, Eq)]
 enum StableDiffusionVersion {
     V1_5,
     V2_1,
     Xl,
 }
 
-#[allow(unused)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModelFile {
     Tokenizer,
@@ -204,7 +203,18 @@ impl ModelFile {
                     Self::Clip => (version.repo(), version.clip_file(use_f16)),
                     Self::Clip2 => (version.repo(), version.clip2_file(use_f16)),
                     Self::Unet => (version.repo(), version.unet_file(use_f16)),
-                    Self::Vae => (version.repo(), version.vae_file(use_f16)),
+                    Self::Vae => {
+                        // Override for SDXL when using f16 weights.
+                        // See https://github.com/huggingface/candle/issues/1060
+                        if version == StableDiffusionVersion::Xl && use_f16 {
+                            (
+                                "madebyollin/sdxl-vae-fp16-fix",
+                                "diffusion_pytorch_model.safetensors",
+                            )
+                        } else {
+                            (version.repo(), version.vae_file(use_f16))
+                        }
+                    }
                 };
                 let filename = Api::new()?.model(repo.to_string()).get(path)?;
                 Ok(filename)
@@ -406,7 +416,7 @@ fn run(args: Args) -> Result<()> {
 
     println!("Building the autoencoder.");
     let vae_weights = ModelFile::Vae.get(vae_weights, sd_version, use_f16)?;
-    let vae = sd_config.build_vae(&vae_weights, &device, dtype)?;
+    let vae = sd_config.build_vae(vae_weights, &device, dtype)?;
     let init_latent_dist = match &img2img {
         None => None,
         Some(image) => {
@@ -416,7 +426,7 @@ fn run(args: Args) -> Result<()> {
     };
     println!("Building the unet.");
     let unet_weights = ModelFile::Unet.get(unet_weights, sd_version, use_f16)?;
-    let unet = sd_config.build_unet(&unet_weights, &device, 4, use_flash_attn, dtype)?;
+    let unet = sd_config.build_unet(unet_weights, &device, 4, use_flash_attn, dtype)?;
 
     let t_start = if img2img.is_some() {
         n_steps - (n_steps as f64 * img2img_strength) as usize
@@ -484,9 +494,8 @@ fn run(args: Args) -> Result<()> {
             num_samples
         );
         let image = vae.decode(&(&latents / 0.18215)?)?;
-        // TODO: Add the clamping between 0 and 1.
         let image = ((image / 2.)? + 0.5)?.to_device(&Device::Cpu)?;
-        let image = (image * 255.)?.to_dtype(DType::U8)?.i(0)?;
+        let image = (image.clamp(0f32, 1.)? * 255.)?.to_dtype(DType::U8)?.i(0)?;
         let image_filename = output_filename(&final_image, idx + 1, num_samples, None);
         candle_examples::save_image(&image, image_filename)?
     }

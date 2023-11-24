@@ -29,9 +29,13 @@ impl Args {
     fn build_model(&self) -> Result<Restnet> {
         let device = candle_examples::device(self.cpu)?;
         let weights_file = self.weight_file.as_ref().expect("need weighs file");
-        let weights = unsafe { candle::safetensors::MmapedFile::new(weights_file)? };
-        let weights = weights.deserialize()?;
-        let vb = VarBuilder::from_safetensors(vec![weights], DType::F32, &device);
+        // let weights = unsafe { candle::safetensors::MmapedFile::new(weights_file)? };
+        // let weights = weights.deserialize()?;
+        // let vb = VarBuilder::from_buffered_safetensors(vec![weights], DType::F32, &device);
+
+        let vb =
+            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_file], DType::F32, &device)? };
+        // from_mmaped_safetensors
         Restnet::load(vb)
     }
 }

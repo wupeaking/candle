@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
@@ -10,11 +8,11 @@ use candle_transformers::models::stable_diffusion;
 use candle_transformers::models::wuerstchen;
 
 use anyhow::{Error as E, Result};
-use candle::{DType, Device, IndexOp, Module, Tensor, D};
+use candle::{DType, Device, IndexOp, Tensor};
 use clap::Parser;
 use tokenizers::Tokenizer;
 
-const PRIOR_GUIDANCE_SCALE: f64 = 8.0;
+const PRIOR_GUIDANCE_SCALE: f64 = 4.0;
 const RESOLUTION_MULTIPLE: f64 = 42.67;
 const LATENT_DIM_SCALE: f64 = 10.67;
 const PRIOR_CIN: usize = 16;
@@ -40,6 +38,9 @@ struct Args {
     /// Enable tracing (generates a trace-timestamp.json file).
     #[arg(long)]
     tracing: bool,
+
+    #[arg(long)]
+    use_flash_attn: bool,
 
     /// The height in pixels of the generated image.
     #[arg(long)]
@@ -76,14 +77,6 @@ struct Args {
     #[arg(long, value_name = "FILE")]
     /// The file specifying the tokenizer to used for prior tokenization.
     prior_tokenizer: Option<String>,
-
-    /// The size of the sliced attention or 0 for automatic slicing (disabled by default)
-    #[arg(long)]
-    sliced_attention_size: Option<usize>,
-
-    /// The number of steps to run the diffusion for.
-    #[arg(long, default_value_t = 30)]
-    n_steps: usize,
 
     /// The number of samples to generate.
     #[arg(long, default_value_t = 1)]
@@ -217,10 +210,8 @@ fn run(args: Args) -> Result<()> {
         cpu,
         height,
         width,
-        n_steps,
         tokenizer,
         final_image,
-        sliced_attention_size,
         num_samples,
         clip_weights,
         prior_weights,
@@ -284,13 +275,19 @@ fn run(args: Args) -> Result<()> {
         )?;
 
         let prior = {
-            let prior_weights = ModelFile::Prior.get(prior_weights)?;
-            let weights = unsafe { candle::safetensors::MmapedFile::new(prior_weights)? };
-            let weights = weights.deserialize()?;
-            let vb = candle_nn::VarBuilder::from_safetensors(vec![weights], DType::F32, &device);
+            let file = ModelFile::Prior.get(prior_weights)?;
+            let vb = unsafe {
+                candle_nn::VarBuilder::from_mmaped_safetensors(&[file], DType::F32, &device)?
+            };
             wuerstchen::prior::WPrior::new(
-                /* c_in */ PRIOR_CIN, /* c */ 1536, /* c_cond */ 1280,
-                /* c_r */ 64, /* depth */ 32, /* nhead */ 24, vb,
+                /* c_in */ PRIOR_CIN,
+                /* c */ 1536,
+                /* c_cond */ 1280,
+                /* c_r */ 64,
+                /* depth */ 32,
+                /* nhead */ 24,
+                args.use_flash_attn,
+                vb,
             )?
         };
         let prior_scheduler = wuerstchen::ddpm::DDPMWScheduler::new(60, Default::default())?;
@@ -315,10 +312,10 @@ fn run(args: Args) -> Result<()> {
 
     println!("Building the vqgan.");
     let vqgan = {
-        let vqgan_weights = ModelFile::VqGan.get(vqgan_weights)?;
-        let weights = unsafe { candle::safetensors::MmapedFile::new(vqgan_weights)? };
-        let weights = weights.deserialize()?;
-        let vb = candle_nn::VarBuilder::from_safetensors(vec![weights], DType::F32, &device);
+        let file = ModelFile::VqGan.get(vqgan_weights)?;
+        let vb = unsafe {
+            candle_nn::VarBuilder::from_mmaped_safetensors(&[file], DType::F32, &device)?
+        };
         wuerstchen::paella_vq::PaellaVQ::new(vb)?
     };
 
@@ -326,10 +323,10 @@ fn run(args: Args) -> Result<()> {
 
     // https://huggingface.co/warp-ai/wuerstchen/blob/main/decoder/config.json
     let decoder = {
-        let decoder_weights = ModelFile::Decoder.get(decoder_weights)?;
-        let weights = unsafe { candle::safetensors::MmapedFile::new(decoder_weights)? };
-        let weights = weights.deserialize()?;
-        let vb = candle_nn::VarBuilder::from_safetensors(vec![weights], DType::F32, &device);
+        let file = ModelFile::Decoder.get(decoder_weights)?;
+        let vb = unsafe {
+            candle_nn::VarBuilder::from_mmaped_safetensors(&[file], DType::F32, &device)?
+        };
         wuerstchen::diffnext::WDiffNeXt::new(
             /* c_in */ DECODER_CIN,
             /* c_out */ DECODER_CIN,
@@ -337,6 +334,7 @@ fn run(args: Args) -> Result<()> {
             /* c_cond */ 1024,
             /* clip_embd */ 1024,
             /* patch_size */ 2,
+            args.use_flash_attn,
             vb,
         )?
     };
@@ -354,7 +352,7 @@ fn run(args: Args) -> Result<()> {
         )?;
 
         println!("diffusion process with prior {image_embeddings:?}");
-        let scheduler = wuerstchen::ddpm::DDPMWScheduler::new(60, Default::default())?;
+        let scheduler = wuerstchen::ddpm::DDPMWScheduler::new(12, Default::default())?;
         let timesteps = scheduler.timesteps();
         let timesteps = &timesteps[..timesteps.len() - 1];
         for (index, &t) in timesteps.iter().enumerate() {
@@ -372,8 +370,9 @@ fn run(args: Args) -> Result<()> {
             num_samples
         );
         let image = vqgan.decode(&(&latents * 0.3764)?)?;
-        // TODO: Add the clamping between 0 and 1.
-        let image = (image * 255.)?.to_dtype(DType::U8)?.i(0)?;
+        let image = (image.clamp(0f32, 1f32)? * 255.)?
+            .to_dtype(DType::U8)?
+            .i(0)?;
         let image_filename = output_filename(&final_image, idx + 1, num_samples, None);
         candle_examples::save_image(&image, image_filename)?
     }

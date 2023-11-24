@@ -8,6 +8,7 @@ Candle is a minimalist ML framework for Rust with a focus on performance (includ
 and ease of use. Try our online demos: 
 [whisper](https://huggingface.co/spaces/lmz/candle-whisper),
 [LLaMA2](https://huggingface.co/spaces/lmz/candle-llama2),
+[T5](https://huggingface.co/spaces/radames/Candle-T5-Generation-Wasm),
 [yolo](https://huggingface.co/spaces/lmz/candle-yolo),
 [Segment
 Anything](https://huggingface.co/spaces/radames/candle-segment-anything-wasm).
@@ -50,16 +51,26 @@ For more advanced examples, please have a look at the following section.
 These online demos run entirely in your browser:
 - [yolo](https://huggingface.co/spaces/lmz/candle-yolo): pose estimation and
   object recognition.
-- [whisper](https://huggingface.co/spaces/lmz/candle-whisper): text to speech.
+- [whisper](https://huggingface.co/spaces/lmz/candle-whisper): speech recognition.
 - [LLaMA2](https://huggingface.co/spaces/lmz/candle-llama2): text generation.
+- [T5](https://huggingface.co/spaces/radames/Candle-T5-Generation-Wasm): text generation.
+- [Phi-v1.5](https://huggingface.co/spaces/radames/Candle-Phi-1.5-Wasm): text generation.
 - [Segment Anything Model](https://huggingface.co/spaces/radames/candle-segment-anything-wasm): Image segmentation.
+- [BLIP](https://huggingface.co/spaces/radames/Candle-BLIP-Image-Captioning): image captioning.
 
 We also provide a some command line based examples using state of the art models:
 
 - [LLaMA and LLaMA-v2](./candle-examples/examples/llama/): general LLM.
 - [Falcon](./candle-examples/examples/falcon/): general LLM.
-- [StarCoder](./candle-examples/examples/bigcode/): LLM specialized to code
-  generation.
+- [Phi-v1 and Phi-v1.5](./candle-examples/examples/phi/): a 1.3b general LLM with performance on par with LLaMA-v2 7b.
+- [StableLM-3B-4E1T](./candle-examples/examples/stable-lm/): a 3b general LLM
+  pre-trained on 1T tokens of English and code datasets.
+- [Mistral7b-v0.1](./candle-examples/examples/mistral/): a 7b general LLM with
+  performance larger than all publicly available 13b models as of 2023-09-28.
+- [StarCoder](./candle-examples/examples/bigcode/): LLM specialized to code generation.
+- [Replit-code-v1.5](./candle-examples/examples/replit-code/): a 3.3b LLM specialized for code completion.
+- [Yi-6B / Yi-34B](./candle-examples/examples/yi/): two bilingual
+  (English/Chinese) general LLMs with 6b and 34b parameters.
 - [Quantized LLaMA](./candle-examples/examples/quantized/): quantized version of
   the LLaMA model using the same quantization techniques as
   [llama.cpp](https://github.com/ggerganov/llama.cpp).
@@ -70,6 +81,11 @@ We also provide a some command line based examples using state of the art models
   image generative model, support for the 1.5, 2.1, and SDXL 1.0 versions.
 
 <img src="https://github.com/huggingface/candle/raw/main/candle-examples/examples/stable-diffusion/assets/stable-diffusion-xl.jpg" width="200">
+
+- [Wuerstchen](./candle-examples/examples/wuerstchen/): another text to
+  image generative model.
+
+<img src="https://github.com/huggingface/candle/raw/main/candle-examples/examples/wuerstchen/assets/cat.jpg" width="200">
 
 - [yolo-v3](./candle-examples/examples/yolo-v3/) and
   [yolo-v8](./candle-examples/examples/yolo-v8/): object detection and pose
@@ -82,10 +98,15 @@ We also provide a some command line based examples using state of the art models
 <img src="https://github.com/huggingface/candle/raw/main/candle-examples/examples/segment-anything/assets/sam_merged.jpg" width="200">
 
 - [Whisper](./candle-examples/examples/whisper/): speech recognition model.
-- [T5](./candle-examples/examples/t5), [Bert](./candle-examples/examples/bert/): useful for sentence embeddings.
+- [T5](./candle-examples/examples/t5), [Bert](./candle-examples/examples/bert/),
+  [JinaBert](./candle-examples/examples/jina-bert/) : useful for sentence embeddings.
 - [DINOv2](./candle-examples/examples/dinov2/): computer vision model trained
   using self-supervision (can be used for imagenet classification, depth
   evaluation, segmentation).
+- [BLIP](./candle-examples/examples/blip/): image to text model, can be used to
+  generate captions for an image.
+- [Marian-MT](./candle-examples/examples/marian-mt/): neural machine translation
+  model, generates the translated text from the input text.
 
 Run them using commands like:
 ```
@@ -100,6 +121,8 @@ There are also some wasm examples for whisper and
 `trunk` or try them online:
 [whisper](https://huggingface.co/spaces/lmz/candle-whisper),
 [llama2](https://huggingface.co/spaces/lmz/candle-llama2),
+[T5](https://huggingface.co/spaces/radames/Candle-T5-Generation-Wasm),
+[Phi-v1.5](https://huggingface.co/spaces/radames/Candle-Phi-1.5-Wasm),
 [Segment Anything Model](https://huggingface.co/spaces/radames/candle-segment-anything-wasm).
 
 For LLaMA2, run the following command to retrieve the weight files and start a
@@ -115,8 +138,18 @@ And then head over to
 
 <!--- ANCHOR: useful_libraries --->
 
-## Useful Libraries
-- [`candle-lora`](https://github.com/EricLBuehler/candle-lora) provides a LoRA implementation that conforms to the official `peft` implementation.
+## Useful External Resources
+- [`candle-tutorial`](https://github.com/ToluClassics/candle-tutorial): a
+  very detailed tutorial showing how to convert a PyTorch model to Candle.
+- [`optimisers`](https://github.com/KGrewal1/optimisers): a collection of optimisers
+  including SGD with momentum, AdaGrad, AdaDelta, AdaMax, NAdam, RAdam, and RMSprop.
+- [`candle-lora`](https://github.com/EricLBuehler/candle-lora): a LoRA implementation
+  that conforms to the official `peft` implementation.
+- [`candle-vllm`](https://github.com/EricLBuehler/candle-vllm): Efficient platform for inference and
+  serving local LLMs including an OpenAI compatible API server.
+- [`candle-ext`](https://github.com/mokeyish/candle-ext): an extension library to Candle that provides PyTorch functions not currently available in Candle.
+- [`kalosm`](https://github.com/floneum/floneum/tree/master/kalosm): A multi-modal meta-framework in Rust for interfacing with local pre-trained models with support for controlled generation, custom samplers, in-memory vector databases, audio transcription, and more.
+- [`candle-sampling`](https://github.com/EricLBuehler/candle-sampling): Sampling techniques for Candle.
 
 If you have an addition to this list, please submit a pull request.
 
@@ -138,15 +171,24 @@ If you have an addition to this list, please submit a pull request.
         - LLaMA v1 and v2.
         - Falcon.
         - StarCoder.
-        - T5.
+        - Phi v1.5.
+        - Mistral 7b v0.1.
+        - StableLM-3B-4E1T.
+        - Replit-code-v1.5-3B.
         - Bert.
+        - Yi-6B and Yi-34B.
+    - Text to text.
+        - T5 and its variants: FlanT5, UL2, MADLAD400 (translation), CoEdit (Grammar correction).
+        - Marian MT (Machine Translation).
     - Whisper (multi-lingual support).
-    - Stable Diffusion v1.5, v2.1, XL v1.0.
+    - Text to image.
+        - Stable Diffusion v1.5, v2.1, XL v1.0.
+        - Wurstchen v2.
+    - Image to text.
+        - BLIP.
     - Computer Vision Models.
-        - DINOv2.
-        - EfficientNet.
-        - yolo-v3.
-        - yolo-v8.
+        - DINOv2, ConvMixer, EfficientNet, ResNet, ViT.
+        - yolo-v3, yolo-v8.
         - Segment-Anything Model (SAM).
 - File formats: load models from safetensors, npz, ggml, or PyTorch files.
 - Serverless (on CPU), small and fast deployments.
@@ -184,6 +226,7 @@ Cheatsheet:
 - [candle-datasets](./candle-datasets/): Datasets and data loaders.
 - [candle-transformers](./candle-transformers): transformers-related utilities.
 - [candle-flash-attn](./candle-flash-attn): Flash attention v2 layer.
+- [candle-onnx](./candle-onnx/): ONNX model evaluation.
 
 ## FAQ
 
@@ -305,6 +348,11 @@ mdbook test candle-book -L .\target\debug\deps\ `
 -L native=$env:USERPROFILE\.cargo\registry\src\index.crates.io-6f17d22bba15001f\windows_x86_64_msvc-0.42.2\lib `
 -L native=$env:USERPROFILE\.cargo\registry\src\index.crates.io-6f17d22bba15001f\windows_x86_64_msvc-0.48.5\lib
 ```
+
+#### Extremely slow model load time with WSL
+
+This may be caused by the models being loaded from `/mnt/c`, more details on
+[stackoverflow](https://stackoverflow.com/questions/68972448/why-is-wsl-extremely-slow-when-compared-with-native-windows-npm-yarn-processing).
 
 #### Tracking down errors
 

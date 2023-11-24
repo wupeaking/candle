@@ -49,6 +49,7 @@ mod device;
 pub mod display;
 mod dtype;
 mod dummy_cuda_backend;
+mod dummy_metal_backend;
 pub mod error;
 mod indexer;
 pub mod layout;
@@ -87,6 +88,12 @@ pub use cuda_backend::{CudaDevice, CudaStorage};
 #[cfg(not(feature = "cuda"))]
 pub use dummy_cuda_backend::{CudaDevice, CudaStorage};
 
+#[cfg(feature = "metal")]
+pub use metal_backend::{MetalDevice, MetalError, MetalStorage};
+
+#[cfg(not(feature = "metal"))]
+pub use dummy_metal_backend::{MetalDevice, MetalError, MetalStorage};
+
 #[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
@@ -123,5 +130,17 @@ impl Module for quantized::QMatMul {
 impl<T: Fn(&Tensor) -> Result<Tensor>> Module for T {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         self(xs)
+    }
+}
+
+// A trait defining a module with forward method using a single tensor argument and a flag to
+// separate the training and evaluation behaviors.
+pub trait ModuleT {
+    fn forward_t(&self, xs: &Tensor, train: bool) -> Result<Tensor>;
+}
+
+impl<M: Module> ModuleT for M {
+    fn forward_t(&self, xs: &Tensor, _train: bool) -> Result<Tensor> {
+        self.forward(xs)
     }
 }

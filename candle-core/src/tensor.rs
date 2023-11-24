@@ -6,7 +6,7 @@ use crate::op::{
 };
 use crate::scalar::TensorOrScalar;
 use crate::shape::{Dim, Dims};
-use crate::{storage::Storage, DType, Device, Error, Layout, Result, Shape};
+use crate::{bail, storage::Storage, DType, Device, Error, Layout, Result, Shape};
 use std::sync::{Arc, RwLock};
 
 /// Unique identifier for tensors.
@@ -177,14 +177,9 @@ impl Tensor {
         is_variable: bool,
     ) -> Result<Self> {
         let none = BackpropOp::none();
-        if is_variable {
-            let shape = shape.into();
-            let storage = device.ones(&shape, dtype)?;
-            Ok(from_storage(storage, shape, none, is_variable))
-        } else {
-            let storage = device.ones(&crate::shape::SCALAR, dtype)?;
-            from_storage(storage, crate::shape::SCALAR, none, is_variable).broadcast_as(shape)
-        }
+        let shape = shape.into();
+        let storage = device.ones(&shape, dtype)?;
+        Ok(from_storage(storage, shape, none, is_variable))
     }
 
     /// Creates a new tensor filled with ones.
@@ -222,14 +217,9 @@ impl Tensor {
         is_variable: bool,
     ) -> Result<Self> {
         let none = BackpropOp::none();
-        if is_variable {
-            let shape = shape.into();
-            let storage = device.zeros(&shape, dtype)?;
-            Ok(from_storage(storage, shape, none, is_variable))
-        } else {
-            let storage = device.zeros(&crate::shape::SCALAR, dtype)?;
-            from_storage(storage, crate::shape::SCALAR, none, is_variable).broadcast_as(shape)
-        }
+        let shape = shape.into();
+        let storage = device.zeros(&shape, dtype)?;
+        Ok(from_storage(storage, shape, none, is_variable))
     }
 
     /// Creates a new tensor filled with zeros.
@@ -395,11 +385,21 @@ impl Tensor {
         step: D,
         device: &Device,
     ) -> Result<Self> {
+        if D::is_zero(&step) {
+            crate::bail!("step cannot be zero")
+        }
         let mut data = vec![];
         let mut current = start;
-        while current < end {
-            data.push(current);
-            current += step;
+        if step >= D::zero() {
+            while current < end {
+                data.push(current);
+                current += step;
+            }
+        } else {
+            while current > end {
+                data.push(current);
+                current += step;
+            }
         }
         let len = data.len();
         Self::from_vec_impl(data, len, device, false)
@@ -459,7 +459,7 @@ impl Tensor {
 
     /// Returns true if the computation graph should track this op, that is if it is
     /// a variable or if it has some variable as dependencies.
-    pub(crate) fn track_op(&self) -> bool {
+    pub fn track_op(&self) -> bool {
         self.is_variable || self.op.is_some()
     }
 
@@ -477,6 +477,12 @@ impl Tensor {
     broadcast_binary_op!(broadcast_div, div);
     broadcast_binary_op!(broadcast_maximum, maximum);
     broadcast_binary_op!(broadcast_minimum, minimum);
+    broadcast_binary_op!(broadcast_eq, eq);
+    broadcast_binary_op!(broadcast_ne, ne);
+    broadcast_binary_op!(broadcast_lt, lt);
+    broadcast_binary_op!(broadcast_le, le);
+    broadcast_binary_op!(broadcast_gt, gt);
+    broadcast_binary_op!(broadcast_ge, ge);
 
     unary_op!(recip, Recip);
     unary_op!(neg, Neg);
@@ -490,7 +496,20 @@ impl Tensor {
     unary_op!(sqrt, Sqrt);
     unary_op!(gelu, Gelu);
     unary_op!(gelu_erf, GeluErf);
+    unary_op!(erf, Erf);
     unary_op!(relu, Relu);
+    unary_op!(ceil, Ceil);
+    unary_op!(floor, Floor);
+    unary_op!(round, Round);
+
+    /// Round element of the input tensor to the nearest integer.
+    ///
+    /// If the number of decimals is negative, it specifies the number of positions to the left of
+    /// the decimal point.
+    pub fn round_to(&self, decimals: i32) -> Result<Self> {
+        let mult = 10f64.powi(decimals);
+        (self * mult)?.round()? * (1f64 / mult)
+    }
 
     /// Retrieves the single scalar value hold in the tensor. If the tensor contains multiple
     /// dimensions, an error is returned instead.
@@ -510,6 +529,7 @@ impl Tensor {
         match &*self.storage() {
             Storage::Cpu(cpu_storage) => from_cpu_storage(cpu_storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -535,6 +555,73 @@ impl Tensor {
             }
         }
         Ok(inp)
+    }
+
+    /// Creates grids of coordinates specified by the 1D inputs.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - A slice of 1D tensors.
+    /// * `xy_indexing` - Whether to use xy indexing or ij indexing. If xy is selected, the
+    /// first dimension corresponds to the cardinality of the second input and the second
+    /// dimension corresponds to the cardinality of the first input. If ij is selected, the
+    /// dimensions are in the same order as the cardinality of the inputs.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use candle_core::{Tensor, Device, Shape};
+    /// let x = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
+    /// let y = Tensor::new(&[4f32, 5., 6.], &Device::Cpu)?;
+    ///
+    /// let grids_xy = Tensor::meshgrid(&[&x, &y], true)?;
+    ///
+    /// assert_eq!(grids_xy.len(), 2);
+    /// assert_eq!(grids_xy[0].dims(), &[3, 3]);
+    ///
+    /// assert_eq!(grids_xy[0].to_vec2::<f32>()?, &[[1., 2., 3.], [1., 2., 3.], [1., 2., 3.]]);
+    /// assert_eq!(grids_xy[1].to_vec2::<f32>()?, &[[4., 4., 4.], [5., 5., 5.], [6., 6., 6.]]);
+    ///
+    /// let grids_ij = Tensor::meshgrid(&[&x, &y], false)?;
+    ///
+    /// assert_eq!(grids_ij[0].to_vec2::<f32>()?, &[[1., 1., 1.], [2., 2., 2.], [3., 3., 3.]]);
+    /// assert_eq!(grids_ij[1].to_vec2::<f32>()?, &[[4., 5., 6.], [4., 5., 6.], [4., 5., 6.]]);
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// * Will return `Err` if `args` contains less than 2 tensors.
+    ///
+    pub fn meshgrid<A: AsRef<Tensor>>(args: &[A], xy_indexing: bool) -> Result<Vec<Self>> {
+        if args.len() <= 1 {
+            Err(Error::OpRequiresAtLeastTwoTensors { op: "meshgrid" }.bt())?
+        }
+        let args: Vec<_> = if xy_indexing {
+            args.iter().rev().collect()
+        } else {
+            args.iter().collect()
+        };
+
+        let mut shape = Vec::with_capacity(args.len());
+        for arg in args.iter() {
+            shape.push(arg.as_ref().dims1()?)
+        }
+
+        let mut grids = Vec::with_capacity(args.len());
+        for idx in 0..args.len() {
+            let mut ones = vec![1usize; args.len()];
+            ones[idx] = shape[idx];
+            let arg = args[idx].as_ref().reshape(ones)?;
+            let mut repeats = shape.clone();
+            repeats[idx] = 1;
+            let repeated_tensor = arg.repeat(repeats)?;
+            grids.push(repeated_tensor);
+        }
+        if xy_indexing {
+            grids.reverse();
+        }
+        Ok(grids)
     }
 
     /// This operation multiplies the input tensor by `mul` then adds `add` and return the result.
@@ -612,15 +699,23 @@ impl Tensor {
     pub fn narrow<D: Dim>(&self, dim: D, start: usize, len: usize) -> Result<Self> {
         let dims = self.dims();
         let dim = dim.to_index(self.shape(), "narrow")?;
-        if start + len > dims[dim] {
-            Err(Error::NarrowInvalidArgs {
-                shape: self.shape().clone(),
-                dim,
-                start,
-                len,
-                msg: "start + len > dim_len",
-            }
-            .bt())?
+        let err = |msg| {
+            Err::<(), _>(
+                Error::NarrowInvalidArgs {
+                    shape: self.shape().clone(),
+                    dim,
+                    start,
+                    len,
+                    msg,
+                }
+                .bt(),
+            )
+        };
+        if start > dims[dim] {
+            err("start > dim_len")?
+        }
+        if start.saturating_add(len) > dims[dim] {
+            err("start + len > dim_len")?
         }
         if start == 0 && dims[dim] == len {
             Ok(self.clone())
@@ -759,6 +854,20 @@ impl Tensor {
         let reduced_dim: usize = mean_dims.iter().map(|i| self.dims()[*i]).product();
         let scale = 1f64 / (reduced_dim as f64);
         self.sum_impl(mean_dims, false)? * scale
+    }
+
+    /// Returns the unbiased variance over the selected dimension.
+    pub fn var_keepdim<D: Dim>(&self, dim: D) -> Result<Self> {
+        let dim = dim.to_index(self.shape(), "var")?;
+        let mean = self.mean_keepdim(dim)?;
+        let squares = self.broadcast_sub(&mean)?.sqr()?;
+        squares.sum_impl(dim, true)? / (self.dim(dim)? - 1) as f64
+    }
+
+    /// Returns the unbiased variance over the selected dimension.
+    pub fn var<D: Dim>(&self, dim: D) -> Result<Self> {
+        let dim = dim.to_index(self.shape(), "var")?;
+        self.var_keepdim(dim)?.squeeze(dim)
     }
 
     /// Gathers the maximum value across the selected dimension. The resulting shape has the same
@@ -1108,14 +1217,16 @@ impl Tensor {
                 op: "scatter-add (self, src)",
                 lhs: self.shape().clone(),
                 rhs: source.shape().clone(),
-            })?
+            }
+            .bt())?
         }
         if indexes.dims() != source.dims() {
             Err(Error::ShapeMismatchBinaryOp {
                 op: "scatter-add (indexes, src)",
                 lhs: indexes.shape().clone(),
                 rhs: source.shape().clone(),
-            })?
+            }
+            .bt())?
         }
         let storage = self.storage().scatter_add(
             self.layout(),
@@ -1128,6 +1239,75 @@ impl Tensor {
         let op = BackpropOp::new3(self, indexes, source, |t1, t2, t3| {
             Op::ScatterAdd(t1, t2, t3, dim)
         });
+        Ok(from_storage(storage, self.shape(), op, false))
+    }
+
+    /// Embeds the values of the `src` tensor into the `self` tensor on the specified dimension.
+    pub fn slice_scatter<D: Dim>(&self, src: &Self, dim: D, start: usize) -> Result<Self> {
+        let dim = dim.to_index(self.shape(), "slice-scatter")?;
+        if dim == 0 {
+            self.slice_scatter0(src, start)
+        } else {
+            // TODO: Maybe we want to add a more efficient implementation at some point.
+            self.transpose(0, dim)?
+                .slice_scatter0(&src.transpose(0, dim)?, start)?
+                .transpose(0, dim)
+        }
+    }
+
+    /// Embeds the values of the `src` tensor into the `self` tensor on the first dimension.
+    pub fn slice_scatter0(&self, src: &Self, start: usize) -> Result<Self> {
+        if self.dtype() != src.dtype() {
+            Err(Error::DTypeMismatchBinaryOp {
+                lhs: self.dtype(),
+                rhs: src.dtype(),
+                op: "slice-scatter",
+            }
+            .bt())?
+        }
+        if self.device().location() != src.device.location() {
+            Err(Error::DeviceMismatchBinaryOp {
+                lhs: self.device().location(),
+                rhs: src.device().location(),
+                op: "slice-scatter",
+            }
+            .bt())?
+        }
+        if self.rank() != src.rank() {
+            Err(Error::UnexpectedNumberOfDims {
+                expected: self.rank(),
+                got: src.rank(),
+                shape: src.shape().clone(),
+            }
+            .bt())?
+        }
+        let shape_ok =
+            self.dims()
+                .iter()
+                .zip(src.dims().iter())
+                .enumerate()
+                .all(|(dim_idx, (&d1, &d2))| {
+                    if 0 == dim_idx {
+                        d2 + start <= d1
+                    } else {
+                        d1 == d2
+                    }
+                });
+        if !shape_ok {
+            Err(Error::ShapeMismatchBinaryOp {
+                op: "slice-scatter (self, src)",
+                lhs: self.shape().clone(),
+                rhs: src.shape().clone(),
+            }
+            .bt())?
+        }
+        let mut storage = self.device().zeros(self.shape(), self.dtype())?;
+        self.storage()
+            .copy_strided_src(&mut storage, 0, self.layout())?;
+        let offset = start * src.dims()[1..].iter().product::<usize>();
+        src.storage()
+            .copy_strided_src(&mut storage, offset, src.layout())?;
+        let op = BackpropOp::new2(self, src, |t1, t2| Op::SliceScatter0(t1, t2, start));
         Ok(from_storage(storage, self.shape(), op, false))
     }
 
@@ -1153,7 +1333,8 @@ impl Tensor {
                 op: "index-add (self, source)",
                 lhs: self.shape().clone(),
                 rhs: source.shape().clone(),
-            })?
+            }
+            .bt())?
         }
         // The number of element in indexes must match the dimension on which the add is
         // performed on the source tensor (and the index values from `indexes` are taken from
@@ -1164,7 +1345,8 @@ impl Tensor {
                 op: "index-add (ids, source))",
                 lhs: indexes.shape().clone(),
                 rhs: source.shape().clone(),
-            })?
+            }
+            .bt())?
         }
         let storage = self.storage().index_add(
             self.layout(),
@@ -1212,7 +1394,8 @@ impl Tensor {
                 op: "gather",
                 lhs: self.shape().clone(),
                 rhs: indexes.shape().clone(),
-            })?
+            }
+            .bt())?
         }
         let storage =
             self.storage()
@@ -1286,6 +1469,7 @@ impl Tensor {
         match &*self.storage() {
             Storage::Cpu(storage) => from_cpu_storage(storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -1316,6 +1500,7 @@ impl Tensor {
         match &*self.storage() {
             Storage::Cpu(storage) => from_cpu_storage(storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -1356,6 +1541,7 @@ impl Tensor {
         match &*self.storage() {
             Storage::Cpu(storage) => from_cpu_storage(storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -1519,6 +1705,24 @@ impl Tensor {
         }
     }
 
+    /// Returns the sub-tensor fixing the index at `index` on the dimension `dim`.
+    ///
+    /// ```rust
+    /// use candle_core::{Tensor, Device};
+    /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
+    /// let t = tensor.get_on_dim(1, 0)?;
+    /// assert_eq!(t.to_vec1::<f32>()?, &[0., 2., 4.]);
+    /// let t = tensor.get_on_dim(1, 1)?;
+    /// assert_eq!(t.to_vec1::<f32>()?, &[1., 3., 5.]);
+    /// let t = tensor.get_on_dim(0, 1)?;
+    /// assert_eq!(t.to_vec1::<f32>()?, &[2., 3.]);
+    /// # Ok::<(), candle_core::Error>(())
+    /// ```
+    pub fn get_on_dim<D: Dim>(&self, dim: D, index: usize) -> Result<Tensor> {
+        let dim = dim.to_index(self.shape(), "get_on_dim")?;
+        self.narrow(dim, index, 1)?.squeeze(dim)
+    }
+
     /// Returns a tensor that is a transposed version of the input, the two last dimensions of the
     /// input are swapped.
     ///
@@ -1547,6 +1751,9 @@ impl Tensor {
     pub fn transpose<D1: Dim, D2: Dim>(&self, dim1: D1, dim2: D2) -> Result<Tensor> {
         let dim1 = dim1.to_index(self.shape(), "transpose")?;
         let dim2 = dim2.to_index(self.shape(), "transpose")?;
+        if dim1 == dim2 {
+            return Ok(self.clone());
+        }
         let op = BackpropOp::new1(self, |t| Op::Transpose(t, dim1, dim2));
         let tensor_ = Tensor_ {
             id: TensorId::new(),
@@ -1624,17 +1831,23 @@ impl Tensor {
 
     /// Returns a new tensor detached from the current graph, gradient are not propagated through
     /// this new node. The storage of this tensor is shared with the initial tensor.
+    ///
+    /// If the tensor is already detached from the computation graph, the same tensor is returned.
     pub fn detach(&self) -> Result<Tensor> {
-        let tensor_ = Tensor_ {
-            id: TensorId::new(),
-            storage: self.storage.clone(),
-            layout: self.layout.clone(),
-            op: BackpropOp::none(),
-            is_variable: false,
-            dtype: self.dtype,
-            device: self.device.clone(),
-        };
-        Ok(Tensor(Arc::new(tensor_)))
+        if self.op.is_none() && !self.is_variable {
+            Ok(self.clone())
+        } else {
+            let tensor_ = Tensor_ {
+                id: TensorId::new(),
+                storage: self.storage.clone(),
+                layout: self.layout.clone(),
+                op: BackpropOp::none(),
+                is_variable: false,
+                dtype: self.dtype,
+                device: self.device.clone(),
+            };
+            Ok(Tensor(Arc::new(tensor_)))
+        }
     }
 
     /// If the target device is the same as the tensor device, only a shallow copy is performed.
@@ -1654,6 +1867,9 @@ impl Tensor {
                     Storage::Cuda(cuda.storage_from_cpu_storage(&cpu_storage)?)
                 }
                 (Storage::Cpu(storage), Device::Cpu) => Storage::Cpu(storage.clone()),
+                _ => {
+                    bail!("not implemented yet")
+                }
             };
             let op = BackpropOp::new1(self, Op::ToDevice);
             let tensor_ = Tensor_ {
@@ -2053,9 +2269,54 @@ impl Tensor {
         }
     }
 
+    /// Pad the input tensor using same values along dimension `dim`. This adds `left` elements before the
+    /// input tensor values and `right` elements after.
+    pub fn pad_with_same<D: Dim>(&self, dim: D, left: usize, right: usize) -> Result<Self> {
+        if left == 0 && right == 0 {
+            Ok(self.clone())
+        } else if self.elem_count() == 0 {
+            crate::bail!("cannot use pad_with_same on an empty tensor")
+        } else if left == 0 {
+            let dim = dim.to_index(self.shape(), "pad_with_same")?;
+            let r = self.narrow(dim, self.dim(dim)? - 1, 1)?;
+            let mut v = vec![self];
+            for _ in 0..right {
+                v.push(&r)
+            }
+            Tensor::cat(&v, dim)
+        } else if right == 0 {
+            let dim = dim.to_index(self.shape(), "pad_with_same")?;
+            let l = self.narrow(dim, 0, 1)?;
+            let mut v = vec![];
+            for _ in 0..left {
+                v.push(&l)
+            }
+            v.push(self);
+            Tensor::cat(&v, dim)
+        } else {
+            let dim = dim.to_index(self.shape(), "pad_with_same")?;
+            let l = self.narrow(dim, 0, 1)?;
+            let r = self.narrow(dim, self.dim(dim)? - 1, 1)?;
+            let mut v = vec![];
+            for _ in 0..left {
+                v.push(&l)
+            }
+            v.push(self);
+            for _ in 0..right {
+                v.push(&r)
+            }
+            Tensor::cat(&v, dim)
+        }
+    }
+
     /// Run the `forward` method of `m` on `self`.
     pub fn apply<M: crate::Module>(&self, m: &M) -> Result<Self> {
         m.forward(self)
+    }
+
+    /// Run the `forward` method of `m` on `self`.
+    pub fn apply_t<M: crate::ModuleT>(&self, m: &M, train: bool) -> Result<Self> {
+        m.forward_t(self, train)
     }
 
     pub(crate) fn storage(&self) -> std::sync::RwLockReadGuard<'_, Storage> {
@@ -2171,6 +2432,69 @@ impl Tensor {
         c: C,
     ) -> Result<Self> {
         self.apply_op3_arc(t2, t3, Arc::new(Box::new(c)))
+    }
+
+    /// Normalize a 'relative' axis value: positive values are kept, negative
+    /// values means counting the dimensions from the back.
+    pub fn normalize_axis(&self, axis: i64) -> Result<usize> {
+        let rank = self.rank() as i64;
+        if rank <= axis {
+            crate::bail!("axis {axis} is too large, tensor rank {rank}")
+        } else if 0 <= axis {
+            Ok(axis as usize)
+        } else {
+            let naxis = rank + axis;
+            if naxis < 0 {
+                crate::bail!("axis {axis} is too small, tensor rank {rank}")
+            }
+            Ok(naxis as usize)
+        }
+    }
+
+    /// Returns a lower triangular matrix of ones of size n by n.
+    pub fn tril2(n: usize, dtype: DType, device: &Device) -> Result<Self> {
+        let t = Tensor::arange(0u32, n as u32, device)?;
+        let t1 = t.reshape((1, n))?.broadcast_as((n, n))?;
+        let t2 = t.reshape((n, 1))?.broadcast_as((n, n))?;
+        t1.le(&t2)?.to_dtype(dtype)
+    }
+
+    /// Returns an upper triangular matrix of ones of size n by n.
+    pub fn triu2(n: usize, dtype: DType, device: &Device) -> Result<Self> {
+        let t = Tensor::arange(0u32, n as u32, device)?;
+        let t1 = t.reshape((1, n))?.broadcast_as((n, n))?;
+        let t2 = t.reshape((n, 1))?.broadcast_as((n, n))?;
+        t1.ge(&t2)?.to_dtype(dtype)
+    }
+
+    /// Returns a matrix with a diagonal of ones of size n by n.
+    pub fn eye(n: usize, dtype: DType, device: &Device) -> Result<Self> {
+        let t = Tensor::arange(0u32, n as u32, device)?;
+        let t1 = t.reshape((1, n))?.broadcast_as((n, n))?;
+        let t2 = t.reshape((n, 1))?.broadcast_as((n, n))?;
+        t1.eq(&t2)?.to_dtype(dtype)
+    }
+
+    /// Returns the cumulative sum of elements of the input tensor summed over the specified
+    /// dimension.
+    ///
+    /// This operation is most efficient when dim is the last dimension of the tensor.
+    pub fn cumsum<D: Dim>(&self, dim: D) -> Result<Self> {
+        let dim = dim.to_index(self.shape(), "cumsum")?;
+        let rank = self.rank();
+        if rank == 0 {
+            return Ok(self.clone());
+        }
+        let n_axis = self.dim(dim)?;
+        let triu = Tensor::triu2(n_axis, self.dtype(), self.device())?;
+        if rank == 1 {
+            self.unsqueeze(0)?.matmul(&triu)?.squeeze(0)
+        } else {
+            let last = rank - 1;
+            let t = self.transpose(dim, last)?;
+            let t = t.broadcast_matmul(&triu)?;
+            t.transpose(dim, last)
+        }
     }
 }
 

@@ -223,6 +223,14 @@ impl BackendDevice for CudaDevice {
         })
     }
 
+    fn set_seed(&self, seed: u64) -> Result<()> {
+        // We do not call set_seed but instead create a new curand object. This ensures that the
+        // state will be identical and the same random numbers will be generated.
+        let mut curand = self.curand.lock().unwrap();
+        curand.0 = cudarc::curand::CudaRng::new(seed, self.device.clone()).w()?;
+        Ok(())
+    }
+
     fn location(&self) -> crate::DeviceLocation {
         crate::DeviceLocation::Cuda {
             gpu_id: self.device.ordinal(),
@@ -884,8 +892,6 @@ impl<'a> Map1 for IndexSelect<'a> {
         };
         let ids_shape = ids_l.shape();
         let ids_dims = ids_shape.dims();
-        let ids_el = ids_shape.elem_count();
-        let cfg = LaunchConfig::for_num_elems(ids_el as u32);
         let ds = dev.htod_copy([ids_dims, ids_l.stride()].concat()).w()?;
         let src = match src_l.contiguous_offsets() {
             Some((o1, o2)) => src.slice(o1..o2),
@@ -893,19 +899,23 @@ impl<'a> Map1 for IndexSelect<'a> {
         };
         let left_size: usize = src_l.dims()[..self.2].iter().product();
         let right_size: usize = src_l.dims()[self.2 + 1..].iter().product();
-        let dim_size = src_l.dims()[self.2];
+        let src_dim_size = src_l.dims()[self.2];
+        let ids_dim_size = ids_shape.elem_count();
+        let dst_el = ids_shape.elem_count() * left_size * right_size;
+        let cfg = LaunchConfig::for_num_elems(dst_el as u32);
         let func = dev.get_or_load_func(&kernel_name::<T>(name), kernels::INDEXING)?;
         // SAFETY: Set later by running the kernel.
-        let out = unsafe { dev.alloc::<T>(ids_el * left_size * right_size) }.w()?;
+        let out = unsafe { dev.alloc::<T>(dst_el) }.w()?;
         let params = (
-            ids_el,
+            dst_el,
             ids_dims.len(),
             &ds,
             ids,
             &src,
             &out,
             left_size,
-            dim_size,
+            src_dim_size,
+            ids_dim_size,
             right_size,
         );
         // SAFETY: ffi.
@@ -1798,6 +1808,16 @@ impl BackendStorage for CudaStorage {
         Ok(res_t)
     }
 
+    fn conv_transpose1d(
+        &self,
+        _: &Layout,
+        _: &Self,
+        _: &Layout,
+        _: &crate::conv::ParamsConvTranspose1D,
+    ) -> Result<Self> {
+        todo!()
+    }
+
     #[cfg(not(feature = "cudnn"))]
     fn conv2d(
         &self,
@@ -2161,7 +2181,7 @@ impl BackendStorage for CudaStorage {
                 if src_l.is_contiguous() {
                     dev.dtod_copy(&src, &mut dst).w()?
                 } else {
-                    let func = dev.get_or_load_func("ucopy_64", kernels::UNARY)?;
+                    let func = dev.get_or_load_func("ucopy_f64", kernels::UNARY)?;
                     // SAFETY: Set later by running the kernel.
                     let params = (el_count, dims.len(), &ds, &src, &mut dst);
                     // SAFETY: ffi.

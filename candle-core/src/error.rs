@@ -1,4 +1,4 @@
-use crate::{DType, DeviceLocation, Layout, Shape};
+use crate::{DType, DeviceLocation, Layout, MetalError, Shape};
 
 #[derive(Debug, Clone)]
 pub struct MatMulUnexpectedStriding {
@@ -142,6 +142,9 @@ pub enum Error {
     #[error("{op} expects at least one tensor")]
     OpRequiresAtLeastOneTensor { op: &'static str },
 
+    #[error("{op} expects at least two tensors")]
+    OpRequiresAtLeastTwoTensors { op: &'static str },
+
     #[error("backward is not supported for {op}")]
     BackwardNotSupported { op: &'static str },
 
@@ -149,12 +152,18 @@ pub enum Error {
     #[error("the candle crate has not been built with cuda support")]
     NotCompiledWithCudaSupport,
 
+    #[error("the candle crate has not been built with metal support")]
+    NotCompiledWithMetalSupport,
+
     #[error("cannot find tensor {path}")]
     CannotFindTensor { path: String },
 
     // === Wrapped Errors ===
     #[error(transparent)]
     Cuda(Box<dyn std::error::Error + Send + Sync>),
+
+    #[error("Metal error {0}")]
+    Metal(#[from] MetalError),
 
     #[error(transparent)]
     TryFromIntError(#[from] core::num::TryFromIntError),
